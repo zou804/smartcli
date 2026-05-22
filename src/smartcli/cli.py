@@ -19,6 +19,11 @@ def main() -> None:
     timer = subparsers.add_parser("timer", help="番茄钟")
     timer.add_argument("minutes", type=int, help="分钟数")
 
+    ask = subparsers.add_parser("ask", help="AI问答")
+    ask.add_argument("question",nargs="?", help="问题")
+    ask.add_argument("--chat",action = "store_true",help = "进入对话模式")
+
+
     args = parser.parse_args()
 
     if args.command == "weather":
@@ -32,7 +37,15 @@ def main() -> None:
     elif args.command == "timer":
         from .commands.timer import handle_timer
 
-        handle_timer(args.minutes)
+
+    elif args.command == "ask":
+        from .commands.ask import handle_ask,handle_chat
+        if args.chat:
+            handle_chat()
+        elif args.question:
+            handle_ask(args.question)
+        else:
+            print("请输入问题或使用 --chat 进入对话模式")
 
 
 if __name__ == "__main__":
