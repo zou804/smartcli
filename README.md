@@ -63,8 +63,6 @@ pip install -e .
 DEEPSEEK_API_KEY=your_api_key_here
 ```
 
-> **注意**：`.env` 文件已加入 `.gitignore`，不会被提交到版本控制
-
 ## 快速开始
 
 ### 基础命令
