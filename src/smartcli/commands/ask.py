@@ -1,9 +1,15 @@
 from ..services.llm import LLMService
-def handle_ask(question:str):
+def handle_ask(question:str,role:str ="default"):
     """处理AI问答命令"""
-    print(f"思考中:{question[:50]}")
+    role_names = {
+        "default":"默认",
+        "code":"代码助手",
+        "translate":"翻译助手",
+        "summary":"总结助手"
+    }
+    print(f"{role_names.get(role,role)}")
     llm = LLMService()
-    answer = llm.ask(question)
+    answer = llm.ask(question,role=role)
     print(f"\n回答:{answer}") 
 
 def handle_chat():

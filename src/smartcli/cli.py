@@ -21,6 +21,7 @@ def main() -> None:
 
     ask = subparsers.add_parser("ask", help="AI问答")
     ask.add_argument("question",nargs="?", help="问题")
+    ask.add_argument("--role","-r",default="default",choices=["default","code","translate","summary"],help="AI角色")
     ask.add_argument("--chat",action = "store_true",help = "进入对话模式")
 
 
@@ -43,7 +44,7 @@ def main() -> None:
         if args.chat:
             handle_chat()
         elif args.question:
-            handle_ask(args.question)
+            handle_ask(args.question,args.role)
         else:
             print("请输入问题或使用 --chat 进入对话模式")
 

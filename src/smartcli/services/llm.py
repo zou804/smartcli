@@ -1,6 +1,8 @@
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
+from .prompts import PromptTemplate
+
 
 #加载环境变量
 load_dotenv()
@@ -14,13 +16,21 @@ class LLMService:
         )
         self.model = "deepseek-v4-pro"
 
-    def ask(self,question:str):
-        """向AI提问"""
+    def ask(self,question:str,role:str ="default")->str:
+        """向AI提问,支持不同角色"""
+        #获取不同角色的Prompt
+        prompts = {
+            "default":"你是一个友好的助手，回答简洁有用",\
+            "code":PromptTemplate.code_assistant(),
+            "summary":PromptTemplate.summarizer(),
+        }
+        system_prompt = prompts.get(role,prompts["default"])
+
         try:
             response = self.client.chat.completions.create(
                 model = self.model,
                 messages = [
-                    {"role":"system","content":"你是一个简洁助手，回答控制在100字以内"},
+                    {"role":"system","content":system_prompt},
                     {"role":"user","content":question}
                 ],
                 temperature = 0.7,
