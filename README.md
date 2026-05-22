@@ -6,14 +6,16 @@
 
 ## 当前版本
 
-v0.1.0 - 基础功能（天气、笔记、番茄钟）
+v0.2.0 - 添加 AI 问答功能
 
 ## 技术栈
 
 - Python 3.11
 - argparse（命令行）
-- urllib（HTTP 请求，当前无第三方依赖）
+- urllib（HTTP 请求）
 - dataclass（数据模型）
+- openai（AI API）
+- python-dotenv（环境变量）
 
 ## 功能特性
 
@@ -21,6 +23,7 @@ v0.1.0 - 基础功能（天气、笔记、番茄钟）
 - 📝 笔记管理（增查搜）
 - 🍅 番茄钟计时器
 - ⚡ 异常处理与重试机制
+- 🤖 AI 问答（基于 DeepSeek）
 
 ## 快速开始
 
@@ -69,6 +72,7 @@ python src/smartcli/commands/note.py list
 python -m smartcli.cli note add "一条新笔记"
 python -m smartcli.cli note list
 python -m smartcli.cli note search 关键词
+
 ```
 
 ### 天气
@@ -81,6 +85,20 @@ python -m smartcli.cli weather 广州
 
 ```bash
 python -m smartcli.cli timer 25
+```
+### AI 问答
+
+```bash
+python -m smartcli.cli ask "你好"
+python -m smartcli.cli ask --chat
+```
+
+## 环境变量配置
+
+在项目根目录创建 `.env` 文件：
+
+```env
+DEEPSEEK_API_KEY=your_api_key_here
 ```
 
 ## 常见问题
