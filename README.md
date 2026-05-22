@@ -111,12 +111,25 @@ python -m smartcli.cli timer 5
 ### AI 问答
 
 ```bash
-# 单次问答
+# 单次问答（默认角色）
 python -m smartcli.cli ask "Python 装饰器是什么？"
+
+# 指定角色问答
+python -m smartcli.cli ask "快速排序怎么写？" -r code
+python -m smartcli.cli ask "Hello world" -r translate
+python -m smartcli.cli ask "长篇文章内容..." -r summary
 
 # 进入对话模式
 python -m smartcli.cli ask --chat
 ```
+
+**可用角色：**
+| 角色 | 说明 |
+|------|------|
+| `default` | 默认助手 |
+| `code` | 代码助手（擅长编程和代码示例） |
+| `translate` | 翻译助手 |
+| `summary` | 总结助手 |
 
 ## 项目结构
 
@@ -134,7 +147,8 @@ smartcli/
 │       │   └── weather.py      # 天气查询命令
 │       ├── services/           # 服务层
 │       │   ├── __init__.py
-│       │   └── llm.py          # 大模型服务
+│       │   ├── llm.py          # 大模型服务
+│       │   └── prompts.py      # Prompt 模板
 │       └── utils/              # 工具函数
 │           ├── __init__.py
 │           └── cache.py        # 缓存工具
