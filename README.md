@@ -15,6 +15,7 @@
 |--------|--------|------|
 | `deepseek-v4` | DeepSeek | 高质量模型（默认） |
 | `deepseek-flash` | DeepSeek | 快速响应模型 |
+| `glm-5.1` | 智谱AI | 国产大模型 |
 
 ## 安装
 
@@ -40,6 +41,9 @@ pip install -e .
 ```env
 # DeepSeek API Key
 DEEPSEEK_API_KEY=your-deepseek-api-key
+
+# GLM API Key（可选）
+GLM_API_KEY=your-glm-api-key
 ```
 
 ## 使用方法
@@ -56,6 +60,7 @@ python -m smartcli.cli ask "快速排序怎么写？" -r code
 # 指定模型
 python -m smartcli.cli ask "你好" -m deepseek-v4
 python -m smartcli.cli ask "你好" -m deepseek-flash
+python -m smartcli.cli ask "你好" -m glm-5.1
 ```
 
 ### 可用角色

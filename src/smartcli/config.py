@@ -17,6 +17,15 @@ AVAILABLE_MODELS = {
         "api_key_env": "DEEPSEEK_API_KEY",
         "max_tokens": 500,
         "temperature": 0.7
+    },
+    # 智谱AI GLM
+    "glm-5.1": {
+        "provider": "glm",
+        "model": "glm-5.1",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "api_key_env": "GLM_API_KEY",
+        "max_tokens": 1024,
+        "temperature": 0.7
     }
 }
 
