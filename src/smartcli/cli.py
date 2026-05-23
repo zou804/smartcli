@@ -1,4 +1,5 @@
 import argparse
+from .config import AVAILABLE_MODELS
 
 
 def main() -> None:
@@ -20,9 +21,10 @@ def main() -> None:
     timer.add_argument("minutes", type=int, help="分钟数")
 
     ask = subparsers.add_parser("ask", help="AI问答")
-    ask.add_argument("question",nargs="?", help="问题")
-    ask.add_argument("--role","-r",default="default",choices=["default","code","translate","summary"],help="AI角色")
-    ask.add_argument("--chat",action = "store_true",help = "进入对话模式")
+    ask.add_argument("question", nargs="?", help="问题")
+    ask.add_argument("--role", "-r", default="default", choices=["default", "code", "translate", "summary"], help="AI角色")
+    ask.add_argument("--model", "-m", default="deepseek-v4", choices=AVAILABLE_MODELS.keys(), help="选择模型")
+    ask.add_argument("--chat", action="store_true", help="进入对话模式")
 
 
     args = parser.parse_args()
@@ -40,11 +42,11 @@ def main() -> None:
 
 
     elif args.command == "ask":
-        from .commands.ask import handle_ask,handle_chat
+        from .commands.ask import handle_ask, handle_chat
         if args.chat:
-            handle_chat()
+            handle_chat(model=args.model)
         elif args.question:
-            handle_ask(args.question,args.role)
+            handle_ask(args.question, args.role, args.model)
         else:
             print("请输入问题或使用 --chat 进入对话模式")
 
