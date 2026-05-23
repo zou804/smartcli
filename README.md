@@ -1,156 +1,86 @@
 # SmartCLI
 
-个人智能命令行助手，提供天气查询、笔记管理、番茄钟和 AI 问答等实用功能。
+一个智能命令行工具，支持多模型切换，提供 AI 问答、天气查询、笔记记录等功能。
 
 ## 功能特性
 
-- 🌤️ **天气查询** - 支持国内城市天气查询，带缓存机制避免重复请求
-- 📝 **笔记管理** - 支持添加、列表、搜索笔记功能
-- 🍅 **番茄钟** - 专注计时器，支持自定义时长
-- ⚡ **异常处理** - 网络请求自动重试机制
-- 🤖 **AI 问答** - 基于 DeepSeek 大模型的智能问答和对话功能
+- **AI 问答**：支持多种大模型，可切换不同角色（默认、代码助手、总结器）
+- **天气查询**：快速获取天气信息
+- **笔记记录**：记录和管理笔记
+- **计时器**：简单易用的倒计时功能
 
-## 技术栈
+## 支持的模型
 
-- **Python 3.11+** - 编程语言
-- **argparse** - 命令行参数解析
-- **urllib** - HTTP 请求处理
-- **dataclasses** - 数据模型定义
-- **openai** - AI 模型 API 调用
-- **python-dotenv** - 环境变量管理
+| 模型名 | 提供商 | 说明 |
+|--------|--------|------|
+| `deepseek-v4` | DeepSeek | 高质量模型（默认） |
+| `deepseek-flash` | DeepSeek | 快速响应模型 |
 
-## 安装步骤
-
-### 1. 克隆项目
+## 安装
 
 ```bash
-git clone https://github.com/zou804/smartcli.git
+# 克隆项目
+git clone <your-repo-url>
 cd smartcli
-```
 
-### 2. 创建虚拟环境
+# 创建虚拟环境
+python -m venv smartcli
+source smartcli/bin/activate  # Linux/Mac
+# 或
+smartcli\Scripts\activate    # Windows
 
-```bash
-# 使用 venv
-python -m venv .venv
-
-# 激活虚拟环境
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-
-# Linux/macOS
-source .venv/bin/activate
-```
-
-### 3. 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. 开发模式安装（可选）
-
-```bash
+# 安装依赖
 pip install -e .
 ```
 
-### 5. 配置环境变量
+## 配置
 
-在项目根目录创建 `.env` 文件：
+创建 `.env` 文件：
 
 ```env
-# DeepSeek API Key（用于 AI 问答功能）
-DEEPSEEK_API_KEY=your_api_key_here
+# DeepSeek API Key
+DEEPSEEK_API_KEY=your-deepseek-api-key
 ```
 
-## 快速开始
-
-### 基础命令
-
-```bash
-# 查看帮助
-python -m smartcli.cli --help
-
-# 查看子命令帮助
-python -m smartcli.cli note --help
-```
-
-### 笔记管理
-
-```bash
-# 添加笔记
-python -m smartcli.cli note add "学习 Python 装饰器"
-
-# 查看所有笔记
-python -m smartcli.cli note list
-
-# 搜索笔记
-python -m smartcli.cli note search Python
-```
-
-### 天气查询
-
-```bash
-# 查询指定城市天气
-python -m smartcli.cli weather 广州
-
-# 默认查询广州天气
-python -m smartcli.cli weather
-```
-
-### 番茄钟
-
-```bash
-# 启动 25 分钟番茄钟
-python -m smartcli.cli timer 25
-
-# 启动 5 分钟休息
-python -m smartcli.cli timer 5
-```
+## 使用方法
 
 ### AI 问答
 
 ```bash
-# 单次问答（默认角色）
-python -m smartcli.cli ask "Python 装饰器是什么？"
+# 基本使用
+python -m smartcli.cli ask "你的问题"
 
-# 指定角色问答
+# 指定角色
 python -m smartcli.cli ask "快速排序怎么写？" -r code
-python -m smartcli.cli ask "Hello world" -r translate
-python -m smartcli.cli ask "长篇文章内容..." -r summary
 
-# 进入对话模式
-python -m smartcli.cli ask --chat
+# 指定模型
+python -m smartcli.cli ask "你好" -m deepseek-v4
+python -m smartcli.cli ask "你好" -m deepseek-flash
 ```
 
-**可用角色：**
-| 角色 | 说明 |
-|------|------|
-| `default` | 默认助手 |
-| `code` | 代码助手（擅长编程和代码示例） |
-| `translate` | 翻译助手 |
-| `summary` | 总结助手 |
+### 可用角色
 
-**指定模型：**
+| 参数 | 角色 | 说明 |
+|------|------|------|
+| `-r default` | 默认 | 友好的通用助手 |
+| `-r code` | 代码助手 | 专业的编程助手 |
+| `-r summary` | 总结器 | 文本摘要助手 |
+
+### 其他功能
+
 ```bash
-# 使用 DeepSeek 模型（默认）
-python -m smartcli.cli ask "问题" -m deepseek-v4
+# 天气查询
+python -m smartcli.cli weather 北京
 
-# 使用 GLM 模型
-python -m smartcli.cli ask "问题" -m glm-5.1
+# 笔记记录
+python -m smartcli.cli note add "学习笔记" "今天学习了Python装饰器"
 
-# 同时指定角色和模型
-python -m smartcli.cli ask "快速排序怎么写？" -r code -m glm-5.1
+# 查看笔记列表
+python -m smartcli.cli note list
 
-# 对话模式指定模型
-python -m smartcli.cli ask --chat -m glm-5.1
+# 计时器
+python -m smartcli.cli timer 5
 ```
-
-**可用模型：**
-| 模型名 | 提供商 |
-|--------|--------|
-| `deepseek-v4` | DeepSeek |
-| `glm-5.1` | 讯飞 GLM |
 
 ## 项目结构
 
@@ -161,74 +91,29 @@ smartcli/
 │       ├── __init__.py
 │       ├── cli.py              # 命令行入口
 │       ├── config.py           # 模型配置
-│       ├── commands/           # 命令处理模块
+│       ├── commands/           # 命令实现
 │       │   ├── __init__.py
-│       │   ├── ask.py          # AI 问答命令
-│       │   ├── note.py         # 笔记管理命令
-│       │   ├── timer.py        # 番茄钟命令
-│       │   └── weather.py      # 天气查询命令
-│       ├── services/           # 服务层
-│       │   ├── __init__.py
-│       │   ├── llm.py          # 大模型服务
-│       │   └── prompts.py      # Prompt 模板
-│       └── utils/              # 工具函数
+│       │   ├── ask.py          # AI问答命令
+│       │   ├── weather.py      # 天气命令
+│       │   ├── note.py         # 笔记命令
+│       │   └── timer.py        # 计时器命令
+│       └── services/           # 服务层
 │           ├── __init__.py
-│           └── cache.py        # 缓存工具
-├── data/                       # 数据文件（自动创建）
-│   ├── notes.json              # 笔记数据
-│   └── cache.json              # 天气缓存
-├── .env                        # 环境变量（需自行创建）
-├── .gitignore
-├── requirements.txt            # 依赖列表
-└── README.md
+│           ├── llm.py          # 大模型服务
+│           └── prompts.py      # 提示词模板
+├── .env                        # 环境变量
+├── .gitignore                  # Git忽略文件
+├── pyproject.toml              # 项目配置
+└── README.md                   # 项目说明
 ```
 
-## 数据文件
+## 技术栈
 
-| 文件 | 说明 | 位置 |
-|------|------|------|
-| `notes.json` | 笔记数据存储 | `data/notes.json` |
-| `cache.json` | 天气缓存数据 | `data/cache.json` |
-
-## 常见问题
-
-### Q: 出现 "ModuleNotFoundError: No module named 'smartcli'"
-
-**原因**：Python 无法找到 `smartcli` 模块
-
-**解决方案**：
-
-方法一：设置 PYTHONPATH
-
-```powershell
-# PowerShell
-$env:PYTHONPATH = "src"
-python -m smartcli.cli note list
-```
-
-```bash
-# Bash
-export PYTHONPATH=src
-python -m smartcli.cli note list
-```
-
-方法二：开发模式安装
-
-```bash
-pip install -e .
-```
-
-### Q: AI 问答功能报错
-
-**检查项**：
-1. 确认 `.env` 文件中配置了正确的 `DEEPSEEK_API_KEY`
-2. 确认网络连接正常
-3. 确认 API Key 有足够的余额
+- Python 3.8+
+- argparse - 命令行解析
+- OpenAI SDK - API 调用
+- python-dotenv - 环境变量管理
 
 ## 许可证
 
 MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！

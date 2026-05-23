@@ -4,19 +4,18 @@ AVAILABLE_MODELS = {
     # DeepSeek
     "deepseek-v4": {
         "provider": "deepseek",
-        "model": "deepseek-4.0",
+        "model": "deepseek-v4-pro",
         "base_url": "https://api.deepseek.com",
-        "api_key": "DEEPSEEK_API_KEY",
+        "api_key_env": "DEEPSEEK_API_KEY",
         "max_tokens": 800,
         "temperature": 0.7
     },
-    # GLM
-    "glm-5.1": {
-        "provider": "glm",
-        "model": "glm-5.1",
-        "base_url": "https://maas-api.cn-huabei-1.xf-yun.com/v2",
-        "api_key": "GLM_API_KEY",
-        "max_tokens": 1024,
+    "deepseek-flash": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "max_tokens": 500,
         "temperature": 0.7
     }
 }

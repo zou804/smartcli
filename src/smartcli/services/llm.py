@@ -13,22 +13,26 @@ class LLMService:
 
     def __init__(self, model_name: str = "deepseek-v4"):
         config = get_model_config(model_name)
-        api_key = os.getenv(config["api_key"])
         
+        # 获取 API Key
+        api_key = os.getenv(config["api_key_env"])
         if not api_key:
-            raise ValueError(f"请设置环境变量 {config['api_key']}")
+            raise ValueError(f"请设置环境变量 {config['api_key_env']}")
         
+        self.config = config
+        self.model = config["model"]
+        self.max_tokens = config["max_tokens"]
+        self.temperature = config["temperature"]
+        self.api_key = api_key
+        
+        # 初始化 OpenAI 客户端
         self.client = OpenAI(
             api_key=api_key,
             base_url=config["base_url"]
         )
-        self.model = config["model"]
-        self.max_tokens = config["max_tokens"]
-        self.temperature = config["temperature"]
 
     def ask(self, question: str, role: str = "default") -> str:
         """向AI提问,支持不同角色"""
-        # 获取不同角色的Prompt
         prompts = {
             "default": "你是一个友好的助手，回答简洁有用",
             "code": PromptTemplate.code_assistant(),
