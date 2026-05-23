@@ -131,6 +131,27 @@ python -m smartcli.cli ask --chat
 | `translate` | 翻译助手 |
 | `summary` | 总结助手 |
 
+**指定模型：**
+```bash
+# 使用 DeepSeek 模型（默认）
+python -m smartcli.cli ask "问题" -m deepseek-v4
+
+# 使用 GLM 模型
+python -m smartcli.cli ask "问题" -m glm-5.1
+
+# 同时指定角色和模型
+python -m smartcli.cli ask "快速排序怎么写？" -r code -m glm-5.1
+
+# 对话模式指定模型
+python -m smartcli.cli ask --chat -m glm-5.1
+```
+
+**可用模型：**
+| 模型名 | 提供商 |
+|--------|--------|
+| `deepseek-v4` | DeepSeek |
+| `glm-5.1` | 讯飞 GLM |
+
 ## 项目结构
 
 ```
@@ -139,6 +160,7 @@ smartcli/
 │   └── smartcli/
 │       ├── __init__.py
 │       ├── cli.py              # 命令行入口
+│       ├── config.py           # 模型配置
 │       ├── commands/           # 命令处理模块
 │       │   ├── __init__.py
 │       │   ├── ask.py          # AI 问答命令
