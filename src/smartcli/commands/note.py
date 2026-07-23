@@ -1,81 +1,111 @@
+"""Local knowledge note storage."""
+
+from __future__ import annotations
+
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import List
 
-try:
-    from ..models import Note
-except ImportError:
-    import sys
+from platformdirs import user_data_path
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from smartcli.models import Note
+from ..models import Note
+
+
+class NoteStorageError(RuntimeError):
+    """Raised when note data cannot be read or written."""
+
+
+class NoteNotFoundError(LookupError):
+    """Raised when a note ID does not exist."""
 
 
 class NoteManager:
-    def __init__(self, filepath: str = "data/notes.json"):
-        self.filepath = Path(filepath)
-        self.filepath.parent.mkdir(parents=True, exist_ok=True)
-        self._notes: List[Note] = self._load()
+    def __init__(self, filepath: str | Path | None = None) -> None:
+        self.filepath = Path(filepath) if filepath else user_data_path("smartcli") / "notes.json"
+        self._notes = self._load()
 
-    def _load(self) -> List[Note]:
+    def _load(self) -> list[Note]:
         if not self.filepath.exists():
             return []
-        data = json.loads(self.filepath.read_text(encoding="utf-8"))
-        return [Note(**item) for item in data]
+        try:
+            data = json.loads(self.filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise NoteStorageError(f"Cannot read notes: {exc}") from exc
+        if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+            raise NoteStorageError("Notes file must contain a JSON array of objects")
+        notes = [Note.from_dict(item) for item in data]
+        if any(not note.id for note in notes):
+            raise NoteStorageError("Every note must have an ID")
+        return notes
 
-    def _save(self) -> None:
-        self.filepath.write_text(
-            json.dumps([asdict(n) for n in self._notes], ensure_ascii=False, indent=2),
-            encoding="utf-8",
+    def _save(self, notes: list[Note]) -> None:
+        try:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{self.filepath.name}.", dir=self.filepath.parent
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(
+                        [asdict(note) for note in notes], stream, ensure_ascii=False, indent=2
+                    )
+                    stream.write("\n")
+                os.replace(temp_name, self.filepath)
+            except BaseException:
+                Path(temp_name).unlink(missing_ok=True)
+                raise
+        except OSError as exc:
+            raise NoteStorageError(f"Cannot write notes: {exc}") from exc
+
+    def add(
+        self,
+        content: str,
+        tags: list[str] | None = None,
+        *,
+        title: str | None = None,
+        source: str = "manual",
+        model: str | None = None,
+        role: str | None = None,
+    ) -> Note:
+        clean_content = content.strip()
+        if not clean_content:
+            raise ValueError("Note content cannot be empty")
+        note = Note(
+            id=uuid.uuid4().hex[:8],
+            title=(title or clean_content.splitlines()[0])[:80],
+            content=clean_content,
+            tags=list(dict.fromkeys(tags or [])),
+            source=source,
+            model=model,
+            role=role,
         )
-
-    def add(self, content: str, tags: List[str] = None) -> Note:
-        note = Note(id=str(uuid.uuid4())[:8], content=content, tags=tags or [])
-        self._notes.append(note)
-        self._save()
+        updated_notes = [*self._notes, note]
+        self._save(updated_notes)
+        self._notes = updated_notes
         return note
 
-    def list_all(self) -> List[Note]:
-        return sorted(self._notes, key=lambda n: n.created_at, reverse=True)
+    def list_all(self) -> list[Note]:
+        return sorted(self._notes, key=lambda note: note.created_at, reverse=True)
 
-    def search(self, keyword: str) -> List[Note]:
-        keyword = keyword.lower()
-        return [n for n in self._notes if keyword in n.content.lower()]
+    def get(self, note_id: str) -> Note:
+        for note in self._notes:
+            if note.id == note_id:
+                return note
+        raise NoteNotFoundError(f"Note not found: {note_id}")
 
+    def search(self, keyword: str) -> list[Note]:
+        needle = keyword.casefold()
+        return [
+            note
+            for note in self._notes
+            if needle in "\n".join((note.title, note.content, *note.tags)).casefold()
+        ]
 
-def handle_note(args) -> None:
-    manager = NoteManager()
-    if args.action == "add":
-        note = manager.add(args.content)
-        print(f"笔记已保存 [{note.id}]")
-    elif args.action == "list":
-        notes = manager.list_all()
-        if not notes:
-            print("暂无笔记")
-        for note in notes:
-            print(f"[{note.id}] {note.created_at[:10]} | {note.content[:40]}...")
-    elif args.action == "search":
-        results = manager.search(args.keyword)
-        if not results:
-            print(f"未找到 '{args.keyword}'")
-        for note in results:
-            print(f"[{note.id}] {note.content}")
-
-
-def main() -> None:
-    import argparse
-
-    parser = argparse.ArgumentParser(prog="note", description="笔记管理")
-    subparsers = parser.add_subparsers(dest="action", required=True)
-    add_parser = subparsers.add_parser("add", help="添加笔记")
-    add_parser.add_argument("content", help="笔记内容")
-    subparsers.add_parser("list", help="查看笔记")
-    search_parser = subparsers.add_parser("search", help="搜索笔记")
-    search_parser.add_argument("keyword", help="关键词")
-    handle_note(parser.parse_args())
-
-
-if __name__ == "__main__":
-    main()
+    def delete(self, note_id: str) -> None:
+        note = self.get(note_id)
+        updated_notes = [existing for existing in self._notes if existing is not note]
+        self._save(updated_notes)
+        self._notes = updated_notes
