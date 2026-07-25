@@ -71,3 +71,19 @@ def test_corrupt_config_is_reported(tmp_path):
     path.write_text("[]", encoding="utf-8")
     with pytest.raises(ConfigurationError, match="JSON object"):
         ConfigManager(path).load()
+
+
+def test_empty_legacy_note_does_not_raise_an_internal_error(tmp_path):
+    path = tmp_path / "notes.json"
+    path.write_text(
+        json.dumps([{"id": "empty", "content": "", "tags": None}]), encoding="utf-8"
+    )
+    note = NoteManager(path).get("empty")
+    assert note.title == "Untitled" and note.tags == []
+
+
+def test_invalid_note_fields_are_reported_as_storage_errors(tmp_path):
+    path = tmp_path / "notes.json"
+    path.write_text(json.dumps([{"id": "bad", "tags": "python"}]), encoding="utf-8")
+    with pytest.raises(NoteStorageError, match="tags"):
+        NoteManager(path)

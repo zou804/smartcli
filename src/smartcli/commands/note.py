@@ -36,7 +36,10 @@ class NoteManager:
             raise NoteStorageError(f"Cannot read notes: {exc}") from exc
         if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
             raise NoteStorageError("Notes file must contain a JSON array of objects")
-        notes = [Note.from_dict(item) for item in data]
+        try:
+            notes = [Note.from_dict(item) for item in data]
+        except (TypeError, ValueError, IndexError) as exc:
+            raise NoteStorageError(f"Invalid note data: {exc}") from exc
         if any(not note.id for note in notes):
             raise NoteStorageError("Every note must have an ID")
         return notes

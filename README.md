@@ -21,12 +21,25 @@ python -m pip install -e ".[dev]"
 
 ## 模型与 API Key
 
-内置模型别名为 `deepseek` 和 `glm`。分别设置对应环境变量：
+内置模型别名为 `deepseek`、`glm`、`openai` 和 `ollama`。云端模型分别设置对应环境变量：
 
 ```text
 DEEPSEEK_API_KEY=...
 GLM_API_KEY=...
+OPENAI_API_KEY=...
 ```
+
+`ollama` 默认连接 `http://localhost:11434/v1` 并使用 `qwen2.5:7b`，不需要 API Key。可通过 `OLLAMA_BASE_URL` 和 `OLLAMA_MODEL` 覆盖；其他供应商也支持同名规则，例如 `OPENAI_BASE_URL`、`OPENAI_MODEL`。
+
+## ReAct Agent
+
+```bash
+smartcli agent "检查当前项目并总结测试风险" --model ollama --verbose
+smartcli agent "读取 pyproject.toml 并解释依赖" --workspace .
+git diff | smartcli agent "审查这些修改" --model deepseek
+```
+
+Agent 使用 Thought → Action → Observation 闭环，内置 shell、文件读写和笔记检索工具；最大步数默认为 12。详细 JSON 工具调用协议、关键类结构和安全规则见 [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md)。高危 shell 操作必须在交互终端二次确认，禁止级操作始终拒绝；自动化任务只有显式传入 `--approve-risky` 才会预授权高危操作。
 
 也可以放入当前目录或父目录的 `.env`。API Key 不会写入用户配置或由 `config show` 显示。内置 API 模型 ID 是兼容接口的合理默认值，供应商调整接口后可能需要修改源码中的集中模型注册表。本项目的测试不会访问网络或验证付费模型。
 

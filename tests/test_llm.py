@@ -44,6 +44,16 @@ def test_structured_request_uses_mock_client():
     assert calls.calls[0]["messages"] == messages
 
 
+def test_ollama_adapter_does_not_require_an_api_key():
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="local result"))]
+    )
+    client, _ = client_for(response)
+    service = LLMService("ollama", client=client, environ={})
+    assert service.request([]) == "local result"
+    assert service.config.provider == "ollama"
+
+
 def test_length_finish_reason_marks_response_as_truncated():
     response = SimpleNamespace(
         choices=[

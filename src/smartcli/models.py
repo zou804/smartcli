@@ -20,11 +20,17 @@ class Note:
     def from_dict(cls, value: dict[str, Any]) -> Note:
         """Load current or legacy note data."""
         content = str(value.get("content", ""))
+        lines = content.splitlines()
+        raw_tags = value.get("tags", [])
+        if raw_tags is None:
+            raw_tags = []
+        if not isinstance(raw_tags, list):
+            raise ValueError("Note tags must be a JSON array")
         return cls(
             id=str(value.get("id", "")),
-            title=str(value.get("title") or content.splitlines()[0][:80] or "Untitled"),
+            title=str(value.get("title") or (lines[0][:80] if lines else "Untitled")),
             content=content,
-            tags=[str(tag) for tag in value.get("tags", [])],
+            tags=[str(tag) for tag in raw_tags],
             source=str(value.get("source", "manual")),
             model=value.get("model"),
             role=value.get("role"),

@@ -20,23 +20,38 @@ class ConfigurationError(RuntimeError):
 
 @dataclass(frozen=True)
 class ModelConfig:
+    provider: str
     model_id: str
     base_url: str
-    api_key_env: str
+    api_key_env: str | None
     max_tokens: int = 2048
     temperature: float = 0.7
 
 
 AVAILABLE_MODELS: dict[str, ModelConfig] = {
     "deepseek": ModelConfig(
+        provider="openai_compatible",
         model_id="deepseek-chat",
         base_url="https://api.deepseek.com",
         api_key_env="DEEPSEEK_API_KEY",
     ),
     "glm": ModelConfig(
+        provider="openai_compatible",
         model_id="glm-4-flash",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         api_key_env="GLM_API_KEY",
+    ),
+    "openai": ModelConfig(
+        provider="openai_compatible",
+        model_id="gpt-4o-mini",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    ),
+    "ollama": ModelConfig(
+        provider="ollama",
+        model_id="qwen2.5:7b",
+        base_url="http://localhost:11434/v1",
+        api_key_env=None,
     ),
 }
 DEFAULT_CONFIG: dict[str, str] = {"default_model": "deepseek", "default_role": "default"}

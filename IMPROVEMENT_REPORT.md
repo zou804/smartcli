@@ -73,14 +73,14 @@
 
 ## 7. 测试与验证结果
 
-全部验证使用用户指定的 `C:\Users\zou\miniconda3\envs\agent_dev\python.exe`（Python 3.11.15）。未发起真实模型请求或真实网络测试。
+基础改造曾使用 Python 3.11.15 验证；本轮 ReAct Agent 增量验证使用 Python 3.14.6。未发起真实模型请求或真实网络测试。
 
 - `python -m compileall -q src tests`：退出码 0。由于仓库旧 `__pycache__` 由隔离账户持有，使用 `PYTHONPYCACHEPREFIX` 将本次字节码写入系统临时目录。
-- `python -m pytest`：收集 35 项，最终运行 `35 passed in 1.09s`。
+- `python -m pytest`：收集 50 项，最终运行 `50 passed in 1.35s`。
 - `python -m ruff check .`：`All checks passed!`。
-- `python -m build --no-isolation`：成功生成 `smartcli-0.2.1.tar.gz` 和 `smartcli-0.2.1-py3-none-any.whl`，最终运行无许可证弃用警告。
-- `smartcli --help`：退出码 0，仅显示 ask/chat/note/config 四组顶层命令。
-- `smartcli --version`：退出码 0，输出 `smartcli 0.2.1`。
+- `python -m build --no-isolation`：成功生成 `smartcli-0.3.0.tar.gz` 和 `smartcli-0.3.0-py3-none-any.whl`，最终运行无许可证弃用警告。
+- `smartcli --help`：退出码 0，显示 ask/chat/agent/note/config 五组顶层命令。
+- `smartcli --version`：退出码 0，输出 `smartcli 0.3.0`。
 - 临时目录 note/config 工作流：add、list、search、config set、config show 全部退出码 0，且 config show 只显示两个非敏感配置项。
 - mock AI 工作流抽查：stdin 组合、ask 保存、chat 多轮历史共 3 项，`3 passed in 0.95s`。
 - `git diff --check`：退出码 0，无空白错误。
@@ -108,6 +108,15 @@
 
 ## 11. 当前状态与可用性
 
-SmartCLI 已形成可安装、可测试的 0.2.1 版本。该版本将默认回答上限提升到 2,048 tokens，增加输出截断提示和聊天友好中断，并保证笔记写入失败时内存状态不被提前修改。核心 CLI、离线测试、构建元数据和开发文档一致；在正确配置 API Key 且供应商兼容接口可用的前提下，可以用于开发者的文本分析、多轮追问和本地知识记录。
+SmartCLI 已形成可安装、可测试的 0.3.0 版本。该版本在原有问答、聊天和笔记能力上增加标准 ReAct Agent、工具注册、安全策略、滑动窗口记忆以及 OpenAI 兼容/Ollama 适配器。核心 CLI、离线测试、构建元数据和开发文档一致。
 
 本轮基于真实终端使用进一步完成：Windows UTF-8 管道容错、供应商 `finish_reason=length` 检测、ask/chat 截断警告、`Ctrl+C`/EOF 无 traceback 退出，以及笔记 add/delete 持久化失败时的内存回滚语义。
+
+## 12. ReAct Agent 升级
+
+- 新增 `agent` 命令，执行有最大步数和连续失败上限的 Thought → Action → Observation 循环。
+- 新增统一 `Tool`、`ToolResult`、`ToolContext` 和 `ToolRegistry` 抽象，内置 shell、文件读写和笔记检索。
+- shell 命令分为 safe/review/high/blocked；高危命令需要二次确认，禁止级命令不会执行。
+- 新增按事件数和字符数裁剪的短期记忆，并以 `LongTermMemory` 协议预留向量记忆入口。
+- LLM 服务统一选择 OpenAI 兼容或 Ollama 适配器，支持环境变量覆盖 endpoint 和模型 ID。
+- JSON 调用协议、关键类结构和完整系统提示词入口记录在 `AGENT_PROTOCOL.md`。

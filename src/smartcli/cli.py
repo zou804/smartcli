@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import __version__
+from .agent import AgentError, ReActAgent
 from .commands.ask import (
     TRUNCATION_WARNING,
     InputError,
@@ -22,8 +23,9 @@ from .commands.ask import (
 )
 from .commands.note import NoteManager, NoteNotFoundError, NoteStorageError
 from .config import AVAILABLE_MODELS, ConfigManager, ConfigurationError
-from .services.llm import LLMRequestError
-from .services.prompts import ROLE_PROMPTS
+from .services.llm import LLMRequestError, LLMService
+from .services.prompts import ROLE_PROMPTS, UnknownRoleError
+from .tools import NoteSearchTool, ReadFileTool, ShellTool, ToolRegistry, WriteFileTool
 
 
 def _note_manager() -> NoteManager:
@@ -34,6 +36,12 @@ def _note_manager() -> NoteManager:
 def _config_manager() -> ConfigManager:
     override = os.getenv("SMARTCLI_CONFIG_PATH")
     return ConfigManager(Path(override) if override else None)
+
+
+def _agent_tools() -> ToolRegistry:
+    return ToolRegistry(
+        [ShellTool(), ReadFileTool(), WriteFileTool(), NoteSearchTool(_note_manager())]
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +65,19 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--role", "-r", choices=ROLE_PROMPTS)
     chat_parser.add_argument("--model", "-m", choices=AVAILABLE_MODELS)
     chat_parser.set_defaults(handler=_handle_chat)
+
+    agent_parser = commands.add_parser("agent", help="Run a bounded ReAct agent task")
+    agent_parser.add_argument("task", nargs="?", help="Task or instruction")
+    agent_parser.add_argument("--model", "-m", choices=AVAILABLE_MODELS)
+    agent_parser.add_argument("--max-steps", type=int, default=12)
+    agent_parser.add_argument("--workspace", default=".")
+    agent_parser.add_argument("--verbose", "-v", action="store_true")
+    agent_parser.add_argument(
+        "--approve-risky",
+        action="store_true",
+        help="Pre-approve shell actions classified as high risk",
+    )
+    agent_parser.set_defaults(handler=_handle_agent)
 
     note_parser = commands.add_parser("note", help="Manage local knowledge notes")
     note_commands = note_parser.add_subparsers(dest="note_action", required=True)
@@ -124,6 +145,46 @@ def _handle_ask(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stderr:
 def _handle_chat(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> None:
     role, model = _resolved_ai_options(args)
     chat(role, model, stdin, stdout, stderr)
+
+
+def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> None:
+    if not 1 <= args.max_steps <= 100:
+        raise InputError("--max-steps must be between 1 and 100")
+    workspace = Path(args.workspace).resolve()
+    if not workspace.is_dir():
+        raise InputError(f"Workspace is not a directory: {workspace}")
+    piped = read_piped_input(stdin)
+    task = combine_input(args.task, piped)
+    config = _config_manager().load()
+    model = args.model or config["default_model"]
+
+    def confirm(tool: str, arguments: dict[str, Any], reason: str) -> bool:
+        if args.approve_risky:
+            return True
+        print(f"High-risk action requested by {tool}: {reason}", file=stderr)
+        print(json.dumps(arguments, ensure_ascii=False, indent=2), file=stderr)
+        if not getattr(stdin, "isatty", lambda: False)():
+            print("Denied: confirmation requires an interactive terminal.", file=stderr)
+            return False
+        print("Approve this action? [y/N]: ", end="", flush=True, file=stderr)
+        return stdin.readline().strip().casefold() in {"y", "yes"}
+
+    def on_event(kind: str, content: str) -> None:
+        if args.verbose and kind != "final":
+            print(f"{kind.title()}: {content}", file=stderr)
+
+    agent = ReActAgent(
+        LLMService(model),
+        _agent_tools(),
+        workspace=workspace,
+        confirm=confirm,
+        on_event=on_event,
+        max_steps=args.max_steps,
+    )
+    result = agent.run(task)
+    if not result.success:
+        raise AgentError(result.final)
+    print(result.final, file=stdout)
 
 
 def _handle_note_add(
@@ -194,11 +255,13 @@ def run(
     try:
         args.handler(args, input_stream, output_stream, error_stream)
     except (
+        AgentError,
         ConfigurationError,
         InputError,
         LLMRequestError,
         NoteNotFoundError,
         NoteStorageError,
+        UnknownRoleError,
         ValueError,
     ) as exc:
         print(f"Error: {exc}", file=error_stream)

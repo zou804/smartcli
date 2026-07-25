@@ -33,7 +33,7 @@ def test_help_and_version(capsys):
     with pytest.raises(SystemExit) as version_exit:
         cli.run(["--version"])
     assert version_exit.value.code == 0
-    assert "smartcli 0.2.1" in capsys.readouterr().out
+    assert "smartcli 0.3.0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("role", ROLE_PROMPTS)
@@ -46,6 +46,12 @@ def test_unknown_role_is_rejected(capsys):
         cli.run(["ask", "question", "--role", "unknown"])
     assert exc.value.code == 2
     assert "invalid choice" in capsys.readouterr().err
+
+
+def test_unknown_role_from_service_returns_error(monkeypatch):
+    monkeypatch.setattr(cli, "_resolved_ai_options", lambda args: ("missing", "deepseek"))
+    code, stdout, stderr = run_cli(["ask", "question"])
+    assert code == 1 and not stdout and "Unknown role: missing" in stderr
 
 
 def test_ask_direct_question(isolated_paths, monkeypatch):
@@ -63,6 +69,21 @@ def test_ask_direct_question(isolated_paths, monkeypatch):
         "role": "default",
         "model": "deepseek",
     }
+
+
+def test_agent_command_runs_react_final_response(isolated_paths, monkeypatch):
+    class FakeAgentLLM:
+        def request(self, messages):
+            return '{"thought":"done","final":"agent answer"}'
+
+    monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
+    code, stdout, stderr = run_cli(["agent", "finish this task", "--max-steps", "2"])
+    assert (code, stdout, stderr) == (0, "agent answer\n", "")
+
+
+def test_agent_rejects_invalid_step_limit(isolated_paths):
+    code, stdout, stderr = run_cli(["agent", "task", "--max-steps", "0"])
+    assert code == 1 and not stdout and "between 1 and 100" in stderr
 
 
 def test_ask_warns_when_provider_truncates_response(isolated_paths, monkeypatch):
