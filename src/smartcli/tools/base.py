@@ -48,6 +48,8 @@ class Tool(ABC):
     description: str
     input_schema: dict[str, Any]
     risk_level: RiskLevel = RiskLevel.SAFE
+    capability: str = "read"
+    has_side_effects: bool = False
 
     def assess_risk(self, arguments: dict[str, Any]) -> tuple[RiskLevel, str]:
         return self.risk_level, self.risk_level.value

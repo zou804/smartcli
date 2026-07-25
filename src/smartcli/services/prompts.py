@@ -1,5 +1,7 @@
 """Central role definitions used by both the CLI and LLM service."""
 
+from ..output_style import TERMINAL_MARKDOWN_GUIDELINES
+
 ROLE_PROMPTS: dict[str, str] = {
     "default": "You are a concise, practical assistant. Answer the user's request directly.",
     "code": (
@@ -21,6 +23,6 @@ class UnknownRoleError(ValueError):
 def get_role_prompt(role: str) -> str:
     """Return the system prompt for a supported role."""
     try:
-        return ROLE_PROMPTS[role]
+        return f"{ROLE_PROMPTS[role]}\n\n{TERMINAL_MARKDOWN_GUIDELINES}"
     except KeyError as exc:
         raise UnknownRoleError(f"Unknown role: {role}") from exc

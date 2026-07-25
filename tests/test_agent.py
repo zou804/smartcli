@@ -39,6 +39,15 @@ class HighRiskTool(EchoTool):
     risk_level = RiskLevel.HIGH
 
 
+class MutatingTool(EchoTool):
+    name = "mutate"
+    risk_level = RiskLevel.REVIEW
+    has_side_effects = True
+
+    def execute(self, arguments, context: ToolContext):
+        raise AssertionError("dry-run must not execute the tool")
+
+
 def decision(**value):
     return json.dumps(value)
 
@@ -74,6 +83,8 @@ def test_react_agent_closes_action_observation_final_loop(tmp_path):
     assert result.success and result.final == "complete" and result.steps == 2
     assert "observed" in llm.requests[1][1]["content"]
     assert [kind for kind, _ in events] == ["thought", "action", "observation", "thought", "final"]
+    assert "Original task: test task" in llm.requests[1][1]["content"]
+    assert "Step 2 of 12" in llm.requests[1][1]["content"]
 
 
 def test_high_risk_action_requires_confirmation(tmp_path):
@@ -114,3 +125,70 @@ def test_short_term_memory_uses_a_sliding_window():
     assert len(memory.events()) <= 2
     assert memory.events()[-1].content == "latest"
     assert len(memory.render()) <= 40
+
+
+def test_review_action_requires_confirmation(tmp_path):
+    llm = FakeLLM(
+        [
+            decision(thought="try", action={"tool": "mutate", "arguments": {"text": "x"}}),
+            decision(thought="denied", final="not executed"),
+        ]
+    )
+    agent = ReActAgent(
+        llm,
+        ToolRegistry([MutatingTool()]),
+        workspace=tmp_path,
+        confirm=lambda tool, arguments, reason: False,
+    )
+    assert agent.run("change it").final == "not executed"
+    assert "review-risk" in llm.requests[1][1]["content"]
+
+
+def test_dry_run_skips_side_effects_without_confirmation_and_audits(tmp_path):
+    audits = []
+    llm = FakeLLM(
+        [
+            decision(thought="plan", action={"tool": "mutate", "arguments": {"text": "x"}}),
+            decision(thought="done", final="planned"),
+        ]
+    )
+    agent = ReActAgent(
+        llm,
+        ToolRegistry([MutatingTool()]),
+        workspace=tmp_path,
+        confirm=lambda tool, arguments, reason: (_ for _ in ()).throw(
+            AssertionError("dry-run must not request confirmation")
+        ),
+        audit=audits.append,
+        dry_run=True,
+    )
+    assert agent.run("plan it").final == "planned"
+    assert audits == [
+        {
+            "tool": "mutate",
+            "arguments": {"text": "x"},
+            "risk": "review",
+            "reason": "review",
+            "approved": False,
+            "executed": False,
+            "dry_run": True,
+            "success": None,
+        }
+    ]
+
+
+def test_last_step_requires_a_final_answer(tmp_path):
+    llm = FakeLLM([decision(thought="summarize", final="best available answer")])
+    result = ReActAgent(
+        llm, ToolRegistry([EchoTool()]), workspace=tmp_path, max_steps=1
+    ).run("inspect")
+    assert result.final == "best available answer"
+    assert "This is the final step" in llm.requests[0][1]["content"]
+    assert "Original task: inspect" in llm.requests[0][1]["content"]
+
+
+def test_agent_normalizes_final_markdown(tmp_path):
+    llm = FakeLLM([decision(thought="done", final="# Result\n\n```text\nvalue\n```")])
+    result = ReActAgent(llm, ToolRegistry([EchoTool()]), workspace=tmp_path).run("inspect")
+    assert result.final == "### Result\n\nvalue"
+    assert "lightweight Markdown" in llm.requests[0][0]["content"]

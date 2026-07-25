@@ -31,6 +31,8 @@ class ToolRegistry:
                 "description": tool.description,
                 "input_schema": tool.input_schema,
                 "risk_level": tool.risk_level.value,
+                "capability": tool.capability,
+                "has_side_effects": tool.has_side_effects,
             }
             for tool in self._tools.values()
         ]

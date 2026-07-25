@@ -1,4 +1,6 @@
 # Compatibility install file. Project metadata in pyproject.toml is authoritative.
+httpx>=0.27
 openai>=1.0
 python-dotenv>=1.0
 platformdirs>=4.0
+rich>=13.7

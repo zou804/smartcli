@@ -5,7 +5,7 @@ import json
 import pytest
 
 from smartcli.commands.note import NoteManager, NoteNotFoundError, NoteStorageError
-from smartcli.config import ConfigManager, ConfigurationError
+from smartcli.config import ConfigManager, ConfigurationError, ModelProfile
 
 
 def test_note_add_search_show_and_delete(tmp_path):
@@ -47,6 +47,71 @@ def test_config_defaults_update_and_validation(tmp_path):
         manager.set("secret", "value")
     with pytest.raises(ConfigurationError, match="Unknown model"):
         manager.set("default_model", "missing")
+
+
+def test_custom_model_profile_lifecycle_and_default_guard(tmp_path):
+    manager = ConfigManager(tmp_path / "config.json")
+    profile = ModelProfile(
+        provider="openai_compatible",
+        model_id="custom-chat",
+        base_url="https://models.example.test/v1",
+        api_key_env="CUSTOM_API_KEY",
+        max_tokens=4096,
+        timeout_seconds=30,
+        connect_timeout_seconds=5,
+        max_retries=3,
+    )
+    manager.add_profile("custom", profile)
+    assert manager.get_profile("custom") == profile
+    assert manager.set("default_model", "custom")["default_model"] == "custom"
+    with pytest.raises(ConfigurationError, match="default"):
+        manager.remove_profile("custom")
+    manager.set("default_model", "deepseek")
+    manager.remove_profile("custom")
+    with pytest.raises(ConfigurationError, match="Unknown model profile"):
+        manager.get_profile("custom")
+
+
+def test_model_profile_validation_rejects_secrets_and_invalid_timeouts():
+    with pytest.raises(ConfigurationError, match="environment variable"):
+        ModelProfile("openai_compatible", "x", "https://example.test", "actual-secret").validate()
+    with pytest.raises(ConfigurationError, match="connect_timeout"):
+        ModelProfile(
+            "ollama",
+            "x",
+            "http://localhost:11434/v1",
+            None,
+            timeout_seconds=2,
+            connect_timeout_seconds=3,
+        ).validate()
+    with pytest.raises(ConfigurationError, match="must not contain credentials"):
+        ModelProfile(
+            "openai_compatible",
+            "x",
+            "https://user:password@example.test/v1",
+            "CUSTOM_API_KEY",
+        ).validate()
+
+
+def test_custom_profile_cannot_override_builtin_via_config_file(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "deepseek": {
+                        "provider": "ollama",
+                        "model_id": "fake",
+                        "base_url": "http://localhost:11434/v1",
+                        "api_key_env": None,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="cannot override"):
+        ConfigManager(path).load()
 
 
 def test_note_memory_is_not_updated_when_persist_fails(tmp_path, monkeypatch):

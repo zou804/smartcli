@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 
 from smartcli.commands.ask import chat
-from smartcli.services.llm import LLMRequestError
+from smartcli.services.llm import LLMRequestError, ResponseText
 
 
 class FakeService:
@@ -81,3 +81,27 @@ def test_chat_handles_keyboard_interrupt_cleanly():
     )
     assert "Chat ended." in stdout.getvalue()
     assert stderr.getvalue() == ""
+
+
+def test_chat_normalizes_output_and_history_while_preserving_metadata():
+    class MarkdownService:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, messages):
+            self.requests.append([dict(message) for message in messages])
+            return ResponseText("# Result\n\n```text\nvalue\n```", truncated=True, attempts=2)
+
+    service = MarkdownService()
+    stdout, stderr = io.StringIO(), io.StringIO()
+    chat(
+        "default",
+        "deepseek",
+        io.StringIO("first\nsecond\nq\n"),
+        stdout,
+        stderr,
+        service_factory=lambda model: service,
+    )
+    assert "### Result\n\nvalue" in stdout.getvalue()
+    assert service.requests[1][2]["content"] == "### Result\n\nvalue"
+    assert stderr.getvalue().count("output limit") == 2

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smartcli"
-version = "0.3.0"
+version = "0.6.3"
 description = "A local-first ReAct agent command-line tool for developer workflows"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,9 +16,11 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 dependencies = [
+    "httpx>=0.27",
     "openai>=1.0",
     "python-dotenv>=1.0",
     "platformdirs>=4.0",
+    "rich>=13.7",
 ]
 
 [project.optional-dependencies]

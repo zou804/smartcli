@@ -15,6 +15,7 @@ from smartcli.services.prompts import ROLE_PROMPTS, get_role_prompt
 def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("SMARTCLI_CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setenv("SMARTCLI_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("SMARTCLI_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     return tmp_path
 
 
@@ -33,12 +34,12 @@ def test_help_and_version(capsys):
     with pytest.raises(SystemExit) as version_exit:
         cli.run(["--version"])
     assert version_exit.value.code == 0
-    assert "smartcli 0.3.0" in capsys.readouterr().out
+    assert "smartcli 0.6.3" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("role", ROLE_PROMPTS)
 def test_every_cli_role_maps_to_a_prompt(role):
-    assert get_role_prompt(role)
+    assert "lightweight Markdown" in get_role_prompt(role)
 
 
 def test_unknown_role_is_rejected(capsys):
@@ -81,9 +82,107 @@ def test_agent_command_runs_react_final_response(isolated_paths, monkeypatch):
     assert (code, stdout, stderr) == (0, "agent answer\n", "")
 
 
+def test_agent_verbose_does_not_print_model_thought(isolated_paths, monkeypatch):
+    class FakeAgentLLM:
+        def request(self, messages):
+            return '{"thought":"private rationale","final":"done"}'
+
+    monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
+    code, stdout, stderr = run_cli(["agent", "finish", "--verbose"])
+    assert (code, stdout) == (0, "done\n")
+    assert "private rationale" not in stderr
+
+
 def test_agent_rejects_invalid_step_limit(isolated_paths):
     code, stdout, stderr = run_cli(["agent", "task", "--max-steps", "0"])
     assert code == 1 and not stdout and "between 1 and 100" in stderr
+
+
+def test_agent_is_read_only_by_default_and_validates_capabilities(isolated_paths, capsys):
+    assert cli._agent_tools().names() == ("list_files", "read_file", "note_search")
+    assert cli._agent_tools({"write"}).names() == (
+        "list_files",
+        "read_file",
+        "note_search",
+        "write_file",
+    )
+    assert cli._agent_tools({"git"}).names()[-1] == "git"
+    with pytest.raises(SystemExit) as exc:
+        cli.run(["agent", "task", "--allow", "shell"])
+    assert exc.value.code == 2 and "invalid choice" in capsys.readouterr().err
+
+
+def test_agent_dry_run_skips_write_and_redacts_audit(isolated_paths, monkeypatch):
+    class FakeAgentLLM:
+        calls = 0
+
+        def request(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "thought": "write",
+                        "action": {
+                            "tool": "write_file",
+                            "arguments": {"path": "result.txt", "content": "private body"},
+                        },
+                    }
+                )
+            return '{"thought":"done","final":"planned"}'
+
+    monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
+    code, stdout, stderr = run_cli(
+        [
+            "agent",
+            "prepare a file",
+            "--allow",
+            "write",
+            "--dry-run",
+            "--workspace",
+            str(isolated_paths),
+        ]
+    )
+    assert code == 0 and stdout == "planned\n" and "Dry run" in stderr
+    assert not (isolated_paths / "result.txt").exists()
+    audit = json.loads((isolated_paths / "audit.jsonl").read_text(encoding="utf-8"))
+    assert audit["dry_run"] is True and audit["executed"] is False
+    assert audit["arguments"]["path"] == "result.txt"
+    assert "private body" not in json.dumps(audit)
+
+
+def test_approve_risky_never_bypasses_file_write_confirmation(isolated_paths, monkeypatch):
+    class FakeAgentLLM:
+        calls = 0
+
+        def request(self, messages):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "thought": "write",
+                        "action": {
+                            "tool": "write_file",
+                            "arguments": {"path": "unsafe.txt", "content": "untrusted"},
+                        },
+                    }
+                )
+            return '{"thought":"done","final":"write denied"}'
+
+    monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
+    code, stdout, stderr = run_cli(
+        [
+            "agent",
+            "write a file",
+            "--allow",
+            "write",
+            "--approve-risky",
+            "--workspace",
+            str(isolated_paths),
+        ]
+    )
+    assert code == 0 and stdout == "write denied\n"
+    assert "requires confirmation" in stderr
+    assert not (isolated_paths / "unsafe.txt").exists()
 
 
 def test_ask_warns_when_provider_truncates_response(isolated_paths, monkeypatch):
@@ -151,3 +250,77 @@ def test_config_show_never_prints_api_key(isolated_paths, monkeypatch):
     assert run_cli(["config", "set", "default_role", "review"])[0] == 0
     code, _, stderr = run_cli(["config", "set", "api_key", "bad"])
     assert code == 1 and "Unsupported" in stderr
+
+
+def test_json_success_and_error_envelopes(isolated_paths, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "ask_once",
+        lambda message, role, model: ResponseText("answer", attempts=2),
+    )
+    code, stdout, stderr = run_cli(["ask", "question", "--json"])
+    payload = json.loads(stdout)
+    assert code == 0 and not stderr and payload["ok"] is True
+    assert payload["command"] == "ask"
+    assert payload["data"]["answer"] == "answer"
+    assert payload["data"]["attempts"] == 2
+
+    code, stdout, stderr = run_cli(["config", "set", "api_key", "bad", "--json"])
+    payload = json.loads(stdout)
+    assert code == 1 and not stderr and payload["ok"] is False
+    assert payload["command"] == "config.set"
+    assert payload["error"]["type"] == "ConfigurationError"
+
+    code, stdout, stderr = run_cli(["--json", "config", "show"])
+    payload = json.loads(stdout)
+    assert code == 0 and not stderr and payload["command"] == "config.show"
+
+
+def test_model_profile_cli_workflow_and_json_output(isolated_paths):
+    add_args = [
+        "model",
+        "add",
+        "localdev",
+        "--provider",
+        "ollama",
+        "--model-id",
+        "qwen-test",
+        "--base-url",
+        "http://localhost:11434/v1",
+        "--timeout",
+        "25",
+        "--connect-timeout",
+        "3",
+        "--retries",
+        "1",
+        "--json",
+    ]
+    code, stdout, stderr = run_cli(add_args)
+    added = json.loads(stdout)
+    assert code == 0 and not stderr and added["data"]["name"] == "localdev"
+    assert added["data"]["timeout_seconds"] == 25.0
+
+    code, stdout, _ = run_cli(["model", "show", "localdev", "--json"])
+    shown = json.loads(stdout)
+    assert code == 0 and shown["data"]["model_id"] == "qwen-test"
+    assert run_cli(["config", "set", "default_model", "localdev"])[0] == 0
+
+    code, stdout, _ = run_cli(["doctor", "--json"])
+    diagnosis = json.loads(stdout)
+    assert code == 0 and diagnosis["data"]["healthy"] is True
+    assert any(
+        check["name"] == "connection" and check["status"] == "skipped"
+        for check in diagnosis["data"]["checks"]
+    )
+
+
+def test_agent_json_output(isolated_paths, monkeypatch):
+    class FakeAgentLLM:
+        def request(self, messages):
+            return '{"thought":"done","plan":["inspect"],"final":"safe"}'
+
+    monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
+    code, stdout, stderr = run_cli(["agent", "inspect", "--json"])
+    payload = json.loads(stdout)
+    assert code == 0 and not stderr and payload["data"]["final"] == "safe"
+    assert payload["data"]["steps"] == 1

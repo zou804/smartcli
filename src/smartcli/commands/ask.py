@@ -6,7 +6,9 @@ import os
 from collections.abc import Callable
 from typing import TextIO
 
-from ..services.llm import LLMRequestError, LLMService
+from ..output_style import normalize_terminal_markdown
+from ..rendering import render_markdown
+from ..services.llm import LLMRequestError, LLMService, ResponseText
 from ..services.prompts import get_role_prompt
 
 MAX_STDIN_CHARS = 100_000
@@ -61,7 +63,19 @@ def ask_once(
         {"role": "system", "content": get_role_prompt(role)},
         {"role": "user", "content": user_message},
     ]
-    return service_factory(model).request(messages)
+    response = service_factory(model).request(messages)
+    return _normalize_response(response)
+
+
+def _normalize_response(response: str) -> str:
+    normalized = normalize_terminal_markdown(response)
+    if isinstance(response, ResponseText):
+        return ResponseText(
+            normalized,
+            truncated=response.truncated,
+            attempts=response.attempts,
+        )
+    return normalized
 
 
 def chat(
@@ -92,13 +106,13 @@ def chat(
                 continue
             messages.append({"role": "user", "content": user_input})
             try:
-                answer = service.request(messages)
+                answer = _normalize_response(service.request(messages))
             except LLMRequestError as exc:
                 messages.pop()
                 print(f"Error: {exc}", file=stderr)
                 continue
             messages.append({"role": "assistant", "content": answer})
-            print(answer, file=stdout)
+            render_markdown(answer, stdout)
             if getattr(answer, "truncated", False):
                 print(TRUNCATION_WARNING, file=stderr)
     except (EOFError, KeyboardInterrupt):

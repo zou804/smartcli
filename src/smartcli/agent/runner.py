@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..memory import LongTermMemory, NullLongTermMemory, ShortTermMemory
+from ..output_style import normalize_terminal_markdown
 from ..services.llm import LLMRequestError
 from ..tools import RiskLevel, ToolContext, ToolRegistry, ToolResult
 from .prompts import build_system_prompt
@@ -29,6 +30,7 @@ class AgentResult:
 
 ConfirmCallback = Callable[[str, dict[str, Any], str], bool]
 EventCallback = Callable[[str, str], None]
+AuditCallback = Callable[[dict[str, Any]], None]
 
 
 class ReActAgent:
@@ -42,9 +44,11 @@ class ReActAgent:
         long_term_memory: LongTermMemory | None = None,
         confirm: ConfirmCallback | None = None,
         on_event: EventCallback | None = None,
+        audit: AuditCallback | None = None,
+        dry_run: bool = False,
         max_steps: int = 12,
         max_consecutive_failures: int = 3,
-        model_retries: int = 2,
+        model_retries: int = 0,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -53,6 +57,8 @@ class ReActAgent:
         self.long_term_memory = long_term_memory or NullLongTermMemory()
         self.confirm = confirm or (lambda tool, arguments, reason: False)
         self.on_event = on_event or (lambda kind, content: None)
+        self.audit = audit or (lambda event: None)
+        self.dry_run = dry_run
         self.max_steps = max_steps
         self.max_consecutive_failures = max_consecutive_failures
         self.model_retries = model_retries
@@ -70,7 +76,7 @@ class ReActAgent:
         plan: tuple[str, ...] = ()
 
         for step in range(1, self.max_steps + 1):
-            decision = self._next_decision(system_prompt)
+            decision = self._next_decision(system_prompt, task, step)
             if decision is None:
                 failures += 1
                 if failures >= self.max_consecutive_failures:
@@ -82,8 +88,9 @@ class ReActAgent:
                 self.memory.add("thought", decision.thought)
                 self.on_event("thought", decision.thought)
             if decision.final is not None:
-                self.on_event("final", decision.final)
-                return AgentResult(True, decision.final, step, plan)
+                final = normalize_terminal_markdown(decision.final)
+                self.on_event("final", final)
+                return AgentResult(True, final, step, plan)
             assert decision.action is not None
             observation = self._execute_action(decision)
             self.memory.add("observation", observation)
@@ -99,13 +106,25 @@ class ReActAgent:
             False, f"Agent reached the {self.max_steps}-step limit", self.max_steps, plan
         )
 
-    def _next_decision(self, system_prompt: str) -> AgentDecision | None:
+    def _next_decision(
+        self, system_prompt: str, task: str, step: int
+    ) -> AgentDecision | None:
+        remaining = self.max_steps - step + 1
+        final_instruction = (
+            "This is the final step. Return `final` now using the available evidence; do not call "
+            "another tool. Clearly state any uncertainty.\n"
+            if remaining == 1
+            else ""
+        )
         messages = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
                     "Current bounded ReAct state follows. Continue from the latest event.\n"
+                    f"Original task: {task}\n"
+                    f"Step {step} of {self.max_steps}; {remaining} step(s) remain.\n"
+                    f"{final_instruction}"
                     f"Runtime platform: {platform.system()}; workspace: {self.context.workspace}\n"
                     "<react_state>\n"
                     f"{self.memory.render()}\n"
@@ -137,11 +156,54 @@ class ReActAgent:
             tool = self.tools.get(action.tool)
             tool.validate(action.arguments)
             risk, reason = tool.assess_risk(action.arguments)
-            self.on_event("action", f"{action.tool} {action.arguments}")
+            event_arguments = dict(action.arguments)
+            if isinstance(event_arguments.get("content"), str):
+                event_arguments["content"] = f"<{len(event_arguments['content'])} chars>"
+            self.on_event("action", f"{action.tool} {event_arguments}")
             if risk is RiskLevel.BLOCKED:
+                self._audit_action(action.tool, action.arguments, risk, reason, False, False, False)
                 return ToolResult(False, f"Action blocked by safety policy: {reason}").observation()
-            if risk is RiskLevel.HIGH and not self.confirm(action.tool, action.arguments, reason):
-                return ToolResult(False, f"User denied high-risk action: {reason}").observation()
-            return tool.execute(action.arguments, self.context).observation()
+            if self.dry_run and tool.has_side_effects:
+                self._audit_action(action.tool, action.arguments, risk, reason, False, False, True)
+                return ToolResult(
+                    True, f"Dry run: would execute {action.tool} with risk={risk.value}"
+                ).observation()
+            if risk in {RiskLevel.REVIEW, RiskLevel.HIGH} and not self.confirm(
+                action.tool, action.arguments, reason
+            ):
+                self._audit_action(action.tool, action.arguments, risk, reason, False, False, False)
+                return ToolResult(
+                    False, f"User denied {risk.value}-risk action: {reason}"
+                ).observation()
+            self._audit_action(action.tool, action.arguments, risk, reason, True, False, False)
+            result = tool.execute(action.arguments, self.context)
+            self._audit_action(
+                action.tool, action.arguments, risk, reason, True, True, False, result.success
+            )
+            return result.observation()
         except Exception as exc:
             return ToolResult(False, f"Tool invocation error: {exc}").observation()
+
+    def _audit_action(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        risk: RiskLevel,
+        reason: str,
+        approved: bool,
+        executed: bool,
+        dry_run: bool,
+        success: bool | None = None,
+    ) -> None:
+        self.audit(
+            {
+                "tool": tool,
+                "arguments": arguments,
+                "risk": risk.value,
+                "reason": reason,
+                "approved": approved,
+                "executed": executed,
+                "dry_run": dry_run,
+                "success": success,
+            }
+        )
