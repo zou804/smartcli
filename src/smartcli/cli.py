@@ -26,6 +26,7 @@ from .commands.ask import (
 from .commands.note import NoteManager, NoteNotFoundError, NoteStorageError
 from .config import BUILTIN_PROFILES, ConfigManager, ConfigurationError, ModelProfile
 from .doctor import run_doctor
+from .evals import EvalCaseError, EvalRunner
 from .execution import ExecutionBackend, backend_from_policy
 from .policy import PolicyError, ProjectPolicy, load_project_policy
 from .rendering import render_markdown
@@ -224,6 +225,20 @@ def build_parser() -> argparse.ArgumentParser:
     run_undo.add_argument("id")
     _add_json_option(run_undo)
     run_undo.set_defaults(handler=_handle_run_undo)
+
+    eval_parser = commands.add_parser("eval", help="Run deterministic Agent evaluations")
+    eval_commands = eval_parser.add_subparsers(dest="eval_action", required=True)
+    eval_run = eval_commands.add_parser("run", help="Run one eval case or suite")
+    eval_run.add_argument("path")
+    eval_run.add_argument(
+        "--model", help="Explicitly use a configured model instead of scripted decisions"
+    )
+    _add_json_option(eval_run)
+    eval_run.set_defaults(handler=_handle_eval_run)
+    eval_report = eval_commands.add_parser("report", help="Show a saved eval report")
+    eval_report.add_argument("id")
+    _add_json_option(eval_report)
+    eval_report.set_defaults(handler=_handle_eval_report)
     return parser
 
 
@@ -589,6 +604,27 @@ def _handle_run_undo(
         )
 
 
+def _handle_eval_run(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    report = EvalRunner(model_name=args.model).run(args.path)
+    args.exit_code = 0 if report.passed else 1
+    if not _emit_json(args, stdout, report.to_dict()):
+        print(
+            f"Eval {report.report_id}: {'PASS' if report.passed else 'FAIL'} "
+            f"({len(report.cases)} case(s))",
+            file=stdout,
+        )
+
+
+def _handle_eval_report(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    report = EvalRunner().get_report(args.id)
+    if not _emit_json(args, stdout, report):
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=stdout)
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -606,6 +642,7 @@ def run(
         AgentError,
         AuditLogError,
         ConfigurationError,
+        EvalCaseError,
         InputError,
         LLMRequestError,
         NoteNotFoundError,

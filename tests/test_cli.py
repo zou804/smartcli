@@ -17,6 +17,7 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("SMARTCLI_NOTES_PATH", str(tmp_path / "notes.json"))
     monkeypatch.setenv("SMARTCLI_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("SMARTCLI_RUNS_PATH", str(tmp_path / "runs"))
+    monkeypatch.setenv("SMARTCLI_EVALS_PATH", str(tmp_path / "evals"))
     return tmp_path
 
 
@@ -338,3 +339,38 @@ def test_agent_json_output(isolated_paths, monkeypatch):
     code, stdout, stderr = run_cli(["run", "show", run_id, "--json"])
     shown = json.loads(stdout)
     assert code == 0 and not stderr and shown["data"]["status"] == "completed"
+
+
+def test_eval_cli_runs_scripted_case_and_reads_report(isolated_paths):
+    case = isolated_paths / "case"
+    fixture = case / "fixture"
+    fixture.mkdir(parents=True)
+    document = {
+        "schema_version": 1,
+        "id": "cli_eval",
+        "task": "Create result.txt",
+        "capabilities": ["write"],
+        "required_checks": [],
+        "expected_changed_paths": ["result.txt"],
+        "forbidden_paths": [],
+        "max_steps": 2,
+        "predicates": [{"path": "result.txt", "contains": ["ok"]}],
+        "decisions": [
+            {
+                "thought": "write",
+                "action": {
+                    "tool": "write_file",
+                    "arguments": {"path": "result.txt", "content": "ok\n"},
+                },
+            },
+            {"thought": "done", "final": "done"},
+        ],
+    }
+    (case / "case.json").write_text(json.dumps(document), encoding="utf-8")
+    code, stdout, stderr = run_cli(["eval", "run", str(case), "--json"])
+    payload = json.loads(stdout)["data"]
+    assert code == 0 and not stderr and payload["passed"] is True
+    report_id = payload["report_id"]
+    code, stdout, stderr = run_cli(["eval", "report", report_id, "--json"])
+    assert code == 0 and not stderr
+    assert json.loads(stdout)["data"]["cases"][0]["case_id"] == "cli_eval"
