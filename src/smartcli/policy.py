@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -33,9 +35,13 @@ class WorkspacePolicy:
 
     def can_write(self, relative_path: str) -> bool:
         normalized = PurePosixPath(relative_path.replace("\\", "/"))
-        if any(normalized.match(pattern) for pattern in self.protected):
+        if normalized.is_absolute() or ".." in normalized.parts:
             return False
-        return not self.writable or any(normalized.match(pattern) for pattern in self.writable)
+        if any(_glob_match(normalized, pattern) for pattern in self.protected):
+            return False
+        return not self.writable or any(
+            _glob_match(normalized, pattern) for pattern in self.writable
+        )
 
 
 @dataclass(frozen=True)
@@ -167,3 +173,26 @@ def _check_names(
     if unknown:
         raise PolicyError(f"checks.{name} contains unknown check(s): {', '.join(unknown)}")
     return tuple(dict.fromkeys(result))
+
+
+def _glob_match(path: PurePosixPath, pattern: str) -> bool:
+    """Match workspace-rooted glob segments with recursive ``**`` semantics."""
+    path_parts = path.parts
+    pattern_parts = PurePosixPath(pattern.replace("\\", "/")).parts
+
+    @cache
+    def match(pattern_index: int, path_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+        segment = pattern_parts[pattern_index]
+        if segment == "**":
+            return match(pattern_index + 1, path_index) or (
+                path_index < len(path_parts) and match(pattern_index, path_index + 1)
+            )
+        return (
+            path_index < len(path_parts)
+            and fnmatchcase(path_parts[path_index], segment)
+            and match(pattern_index + 1, path_index + 1)
+        )
+
+    return match(0, 0)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from smartcli.policy import PolicyError, load_project_policy
+from smartcli.policy import PolicyError, WorkspacePolicy, load_project_policy
 
 
 def test_policy_defaults_and_valid_docker_config(tmp_path):
@@ -56,3 +56,11 @@ def test_policy_rejects_unsafe_or_unknown_values(tmp_path, value, message):
     (tmp_path / "smartcli.toml").write_text(value, encoding="utf-8")
     with pytest.raises(PolicyError, match=message):
         load_project_policy(tmp_path)
+
+
+def test_workspace_double_star_matches_nested_paths_from_workspace_root():
+    writable = WorkspacePolicy(writable=("src/**",))
+    protected = WorkspacePolicy(protected=(".github/**",))
+    assert writable.can_write("src/package/generated/client.py")
+    assert not writable.can_write("docs/src/example.py")
+    assert not protected.can_write(".github/workflows/release/verify.yml")
