@@ -25,6 +25,10 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: python -m ruff check .
       - run: python -m pytest
+      - run: python -m compileall -q src tests
+      - run: smartcli eval run evals/cases --json
+        env:
+          SMARTCLI_EVALS_PATH: ${{ runner.temp }}/smartcli-evals
       - run: python -m build
       - name: Install built wheel
         run: >-

@@ -40,8 +40,11 @@ ReActAgent
 │   ├── GitTool (structured, read-only)
 │   ├── ReadFileTool
 │   ├── WriteFileTool
-│   └── NoteSearchTool
+│   ├── NoteSearchTool
+│   └── ProjectCheckTool -> Local/Docker ExecutionBackend
 ├── ShortTermMemory
+├── TelemetryCollector
+├── VerificationSummary
 └── LongTermMemory (Protocol)
     └── NullLongTermMemory
 ```
@@ -54,11 +57,20 @@ ReActAgent
 
 ## 能力安全规则
 
-Agent 默认注册 `list_files`、`read_file` 和 `note_search`。`--allow git` 开放固定的只读 Git 操作，`--allow write` 开放受控写文件；未注册的能力对模型不可见。通用 shell 和网络能力不再提供。`--dry-run` 允许只读工具执行，但跳过具有副作用的工具。
+Agent 默认注册 `list_files`、`read_file` 和 `note_search`。`--allow git` 开放固定的只读 Git 操作，`--allow write` 开放受控 `write_file` 和 `apply_patch`，`--allow check` 开放 `tests`、`lint`、`compile` 三种枚举化项目检查；未注册的能力对模型不可见。通用 shell 和网络能力不提供。`--dry-run` 允许只读工具执行，但跳过具有副作用的工具。
 
-文件工具将路径限制在 `--workspace` 内并拒绝常见凭据、`.git` 内部路径和符号链接。所有写入均为 `review` 风险并要求逐次确认，`--approve-risky` 不适用于写文件；覆盖还需要匹配当前文件 SHA-256。Git 工具不接收命令文本，只执行程序构造的只读参数数组，并禁用全局/系统 Git 配置和外部 diff。
+文件工具将路径限制在 `--workspace` 内并拒绝常见凭据、`.git` 内部路径和符号链接。所有写入均为 `review` 风险并要求逐次确认，`--approve-risky` 不适用于写文件；覆盖还需要匹配当前文件 SHA-256。Git 工具不接收命令文本，只执行程序构造的只读参数数组，并禁用全局/系统 Git 配置和外部 diff。项目检查不经过 shell，但可能执行仓库代码，因此属于 `high` 风险并要求逐次确认。
+
+workspace 根目录的 `smartcli.toml` 在硬编码安全规则和 CLI 能力授权之后生效，只能进一步收紧可写路径、保护路径、允许/必需检查和执行资源。Local 后端适用于可信仓库；Docker 后端关闭网络、移除 Linux capabilities、使用非 root 用户和资源限制，且任何 Docker 错误都不会触发 Local 回退。
+
+`apply_patch` 只执行精确文本替换，不接收 shell patch 命令。运行器在写工具执行前保存本地检查点，并把 `run_id` 写入审计事件。检查点正文与审计日志分离，撤销前必须匹配写入后的 SHA-256。
 
 每次工具授权和执行结果写入 JSONL 审计日志。参数只记录字段名、目标路径和 SHA-256 摘要，不记录命令或正文原文。
+
+最终步骤会收到由动作日志生成的 verification evidence。只有最后一次成功写入后的检查才有效，模型不得超出证据声称测试通过。运行遥测仅记录次数、耗时、成功状态、后端和供应商 token usage，不接受 prompt、文件正文或工具参数。
+
+离线 eval 使用版本化 `case.json`、一次性 fixture 和脚本化决策驱动同一个 ReActAgent；自动批准仅限案例声明的 capabilities 与临时 workspace。真实模型评测必须在 CLI 显式指定 `--model`。
+eval 中的检查只允许 Docker 后端，fixture 符号链接会被拒绝；未知/未授权工具尝试由运行时记录并进入权限 grader。
 
 ## 系统提示词
 

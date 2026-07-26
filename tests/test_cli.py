@@ -16,6 +16,8 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("SMARTCLI_CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setenv("SMARTCLI_NOTES_PATH", str(tmp_path / "notes.json"))
     monkeypatch.setenv("SMARTCLI_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("SMARTCLI_RUNS_PATH", str(tmp_path / "runs"))
+    monkeypatch.setenv("SMARTCLI_EVALS_PATH", str(tmp_path / "evals"))
     return tmp_path
 
 
@@ -34,7 +36,7 @@ def test_help_and_version(capsys):
     with pytest.raises(SystemExit) as version_exit:
         cli.run(["--version"])
     assert version_exit.value.code == 0
-    assert "smartcli 0.6.3" in capsys.readouterr().out
+    assert "smartcli 0.9.0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("role", ROLE_PROMPTS)
@@ -79,7 +81,8 @@ def test_agent_command_runs_react_final_response(isolated_paths, monkeypatch):
 
     monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
     code, stdout, stderr = run_cli(["agent", "finish this task", "--max-steps", "2"])
-    assert (code, stdout, stderr) == (0, "agent answer\n", "")
+    assert code == 0 and stdout == "agent answer\n" and "Run ID: run_" in stderr
+    assert "Verification: unverified" in stderr
 
 
 def test_agent_verbose_does_not_print_model_thought(isolated_paths, monkeypatch):
@@ -98,6 +101,19 @@ def test_agent_rejects_invalid_step_limit(isolated_paths):
     assert code == 1 and not stdout and "between 1 and 100" in stderr
 
 
+def test_agent_reports_invalid_project_policy_before_model_call(isolated_paths):
+    (isolated_paths / "smartcli.toml").write_text(
+        '[execution]\nnetwork = "host"\n', encoding="utf-8"
+    )
+    code, stdout, stderr = run_cli(
+        ["agent", "inspect", "--workspace", str(isolated_paths), "--json"]
+    )
+    payload = json.loads(stdout)
+    assert code == 1 and not stderr
+    assert payload["error"]["type"] == "PolicyError"
+    assert "network" in payload["error"]["message"]
+
+
 def test_agent_is_read_only_by_default_and_validates_capabilities(isolated_paths, capsys):
     assert cli._agent_tools().names() == ("list_files", "read_file", "note_search")
     assert cli._agent_tools({"write"}).names() == (
@@ -105,8 +121,10 @@ def test_agent_is_read_only_by_default_and_validates_capabilities(isolated_paths
         "read_file",
         "note_search",
         "write_file",
+        "apply_patch",
     )
     assert cli._agent_tools({"git"}).names()[-1] == "git"
+    assert cli._agent_tools({"check"}).names()[-1] == "run_check"
     with pytest.raises(SystemExit) as exc:
         cli.run(["agent", "task", "--allow", "shell"])
     assert exc.value.code == 2 and "invalid choice" in capsys.readouterr().err
@@ -324,3 +342,48 @@ def test_agent_json_output(isolated_paths, monkeypatch):
     payload = json.loads(stdout)
     assert code == 0 and not stderr and payload["data"]["final"] == "safe"
     assert payload["data"]["steps"] == 1
+    assert payload["data"]["verification"]["status"] == "unverified"
+    assert payload["data"]["telemetry"]["model"]["calls"] == 1
+    assert payload["data"]["run_id"].startswith("run_")
+    run_id = payload["data"]["run_id"]
+    code, stdout, stderr = run_cli(["run", "list", "--json"])
+    listed = json.loads(stdout)
+    assert code == 0 and not stderr and listed["data"][0]["run_id"] == run_id
+    code, stdout, stderr = run_cli(["run", "show", run_id, "--json"])
+    shown = json.loads(stdout)
+    assert code == 0 and not stderr and shown["data"]["status"] == "completed"
+
+
+def test_eval_cli_runs_scripted_case_and_reads_report(isolated_paths):
+    case = isolated_paths / "case"
+    fixture = case / "fixture"
+    fixture.mkdir(parents=True)
+    document = {
+        "schema_version": 1,
+        "id": "cli_eval",
+        "task": "Create result.txt",
+        "capabilities": ["write"],
+        "required_checks": [],
+        "expected_changed_paths": ["result.txt"],
+        "forbidden_paths": [],
+        "max_steps": 2,
+        "predicates": [{"path": "result.txt", "contains": ["ok"]}],
+        "decisions": [
+            {
+                "thought": "write",
+                "action": {
+                    "tool": "write_file",
+                    "arguments": {"path": "result.txt", "content": "ok\n"},
+                },
+            },
+            {"thought": "done", "final": "done"},
+        ],
+    }
+    (case / "case.json").write_text(json.dumps(document), encoding="utf-8")
+    code, stdout, stderr = run_cli(["eval", "run", str(case), "--json"])
+    payload = json.loads(stdout)["data"]
+    assert code == 0 and not stderr and payload["passed"] is True
+    report_id = payload["report_id"]
+    code, stdout, stderr = run_cli(["eval", "report", report_id, "--json"])
+    assert code == 0 and not stderr
+    assert json.loads(stdout)["data"]["cases"][0]["case_id"] == "cli_eval"

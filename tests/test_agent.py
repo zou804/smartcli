@@ -7,6 +7,8 @@ import pytest
 from smartcli.agent import AgentError, ReActAgent, parse_decision
 from smartcli.agent.protocol import ProtocolError
 from smartcli.memory import ShortTermMemory
+from smartcli.services.llm import ResponseText
+from smartcli.telemetry import TelemetryCollector, TokenUsage
 from smartcli.tools import RiskLevel, Tool, ToolContext, ToolRegistry, ToolResult
 
 
@@ -46,6 +48,13 @@ class MutatingTool(EchoTool):
 
     def execute(self, arguments, context: ToolContext):
         raise AssertionError("dry-run must not execute the tool")
+
+
+class ExplodingTool(EchoTool):
+    name = "explode"
+
+    def execute(self, arguments, context: ToolContext):
+        raise RuntimeError("tool crashed")
 
 
 def decision(**value):
@@ -171,9 +180,10 @@ def test_dry_run_skips_side_effects_without_confirmation_and_audits(tmp_path):
             "reason": "review",
             "approved": False,
             "executed": False,
-            "dry_run": True,
-            "success": None,
-        }
+                "dry_run": True,
+                "success": None,
+                "run_id": None,
+            }
     ]
 
 
@@ -187,8 +197,133 @@ def test_last_step_requires_a_final_answer(tmp_path):
     assert "Original task: inspect" in llm.requests[0][1]["content"]
 
 
+def test_final_step_receives_machine_generated_verification_evidence(tmp_path):
+    llm = FakeLLM([decision(thought="done", final="best available answer")])
+    ReActAgent(
+        llm,
+        ToolRegistry([EchoTool()]),
+        workspace=tmp_path,
+        max_steps=1,
+        verification_provider=lambda: {
+            "status": "unverified",
+            "required_checks": ["tests"],
+        },
+    ).run("inspect")
+    prompt = llm.requests[0][1]["content"]
+    assert '"status": "unverified"' in prompt
+    assert "Do not claim verification beyond this evidence" in prompt
+
+
 def test_agent_normalizes_final_markdown(tmp_path):
     llm = FakeLLM([decision(thought="done", final="# Result\n\n```text\nvalue\n```")])
     result = ReActAgent(llm, ToolRegistry([EchoTool()]), workspace=tmp_path).run("inspect")
     assert result.final == "### Result\n\nvalue"
     assert "lightweight Markdown" in llm.requests[0][0]["content"]
+
+
+def test_agent_rejects_task_beyond_context_budget(tmp_path):
+    agent = ReActAgent(
+        FakeLLM([]), ToolRegistry([EchoTool()]), workspace=tmp_path, max_task_chars=10
+    )
+    with pytest.raises(AgentError, match="context budget"):
+        agent.run("x" * 11)
+
+
+def test_post_execution_audit_failure_does_not_turn_success_into_failure(tmp_path):
+    calls = 0
+
+    def audit(event):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("audit disk full")
+
+    llm = FakeLLM(
+        [
+            decision(thought="run", action={"tool": "echo", "arguments": {"text": "ok"}}),
+            decision(thought="done", final="completed"),
+        ]
+    )
+    result = ReActAgent(
+        llm, ToolRegistry([EchoTool()]), workspace=tmp_path, audit=audit
+    ).run("task")
+    assert result.success and result.final == "completed"
+    assert "Tool status: success" in llm.requests[1][1]["content"]
+    assert "Audit warning" in llm.requests[1][1]["content"]
+
+
+def test_agent_records_model_protocol_denial_and_tool_telemetry(tmp_path):
+    responses = [
+        ResponseText("bad", duration_ms=10, usage=TokenUsage(3, 1, 4)),
+        ResponseText(
+            decision(thought="try", action={"tool": "danger", "arguments": {"text": "x"}}),
+            duration_ms=20,
+        ),
+        ResponseText(
+            decision(thought="read", action={"tool": "echo", "arguments": {"text": "ok"}}),
+            duration_ms=30,
+        ),
+        ResponseText(decision(thought="done", final="complete"), duration_ms=40),
+    ]
+    ticks = iter((1.0, 1.2))
+    telemetry = TelemetryCollector(clock=lambda: next(ticks))
+    agent = ReActAgent(
+        FakeLLM(responses),
+        ToolRegistry([EchoTool(), HighRiskTool()]),
+        workspace=tmp_path,
+        confirm=lambda tool, arguments, reason: False,
+        telemetry=telemetry,
+        clock=lambda: 5.0,
+    )
+    assert agent.run("measure").success
+    value = telemetry.to_dict()
+    assert value["duration_ms"] == 200 and value["model"]["calls"] == 4
+    assert value["model"]["duration_ms"] == 100
+    assert value["model"]["total_tokens"] == 4
+    assert value["protocol_errors"] == 1 and value["approval_denials"] == 1
+    assert value["tools"]["by_name"]["echo"]["calls"] == 1
+
+
+def test_tool_exception_is_recorded_as_failed_execution_evidence(tmp_path):
+    llm = FakeLLM(
+        [
+            decision(
+                thought="try",
+                action={"tool": "explode", "arguments": {"text": "x"}},
+            ),
+            decision(thought="recover", final="reported"),
+        ]
+    )
+    ticks = iter((1.0, 1.1))
+    telemetry = TelemetryCollector(clock=lambda: next(ticks))
+    recorded = []
+    agent = ReActAgent(
+        llm,
+        ToolRegistry([ExplodingTool()]),
+        workspace=tmp_path,
+        telemetry=telemetry,
+        clock=lambda: 5.0,
+        after_action=lambda tool, arguments, result, checkpoint: recorded.append(result),
+    )
+    assert agent.run("handle failure").final == "reported"
+    assert len(recorded) == 1 and recorded[0].success is False
+    assert "tool crashed" in recorded[0].output
+    assert telemetry.to_dict()["tools"]["failures"] == 1
+
+
+def test_unknown_tool_attempt_emits_runtime_policy_violation(tmp_path):
+    violations = []
+    llm = FakeLLM(
+        [
+            decision(thought="try", action={"tool": "shell", "arguments": {}}),
+            decision(thought="stop", final="denied"),
+        ]
+    )
+    result = ReActAgent(
+        llm,
+        ToolRegistry([EchoTool()]),
+        workspace=tmp_path,
+        on_policy_violation=lambda tool, reason: violations.append((tool, reason)),
+    ).run("do not escape")
+    assert result.final == "denied"
+    assert violations == [("shell", "Unknown tool: shell")]

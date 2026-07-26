@@ -12,6 +12,7 @@ from pathlib import Path
 from platformdirs import user_data_path
 
 from ..models import Note
+from ..storage import InterProcessFileLock, StorageLockError
 
 
 class NoteStorageError(RuntimeError):
@@ -76,30 +77,45 @@ class NoteManager:
         clean_content = content.strip()
         if not clean_content:
             raise ValueError("Note content cannot be empty")
-        note = Note(
-            id=uuid.uuid4().hex[:8],
-            title=(title or clean_content.splitlines()[0])[:80],
-            content=clean_content,
-            tags=list(dict.fromkeys(tags or [])),
-            source=source,
-            model=model,
-            role=role,
-        )
-        updated_notes = [*self._notes, note]
-        self._save(updated_notes)
-        self._notes = updated_notes
+        try:
+            with InterProcessFileLock(self.filepath):
+                latest = self._load()
+                existing_ids = {existing.id for existing in latest}
+                note_id = uuid.uuid4().hex[:8]
+                while note_id in existing_ids:
+                    note_id = uuid.uuid4().hex[:8]
+                note = Note(
+                    id=note_id,
+                    title=(title or clean_content.splitlines()[0])[:80],
+                    content=clean_content,
+                    tags=list(dict.fromkeys(tags or [])),
+                    source=source,
+                    model=model,
+                    role=role,
+                )
+                updated_notes = [*latest, note]
+                self._save(updated_notes)
+                self._notes = updated_notes
+        except StorageLockError as exc:
+            raise NoteStorageError(str(exc)) from exc
         return note
 
     def list_all(self) -> list[Note]:
+        self._refresh()
         return sorted(self._notes, key=lambda note: note.created_at, reverse=True)
 
     def get(self, note_id: str) -> Note:
+        self._refresh()
+        return self._find(note_id)
+
+    def _find(self, note_id: str) -> Note:
         for note in self._notes:
             if note.id == note_id:
                 return note
         raise NoteNotFoundError(f"Note not found: {note_id}")
 
     def search(self, keyword: str) -> list[Note]:
+        self._refresh()
         needle = keyword.casefold()
         return [
             note
@@ -108,7 +124,15 @@ class NoteManager:
         ]
 
     def delete(self, note_id: str) -> None:
-        note = self.get(note_id)
-        updated_notes = [existing for existing in self._notes if existing is not note]
-        self._save(updated_notes)
-        self._notes = updated_notes
+        try:
+            with InterProcessFileLock(self.filepath):
+                self._notes = self._load()
+                note = self._find(note_id)
+                updated_notes = [existing for existing in self._notes if existing is not note]
+                self._save(updated_notes)
+                self._notes = updated_notes
+        except StorageLockError as exc:
+            raise NoteStorageError(str(exc)) from exc
+
+    def _refresh(self) -> None:
+        self._notes = self._load()

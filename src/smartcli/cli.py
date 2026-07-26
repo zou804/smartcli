@@ -26,13 +26,20 @@ from .commands.ask import (
 from .commands.note import NoteManager, NoteNotFoundError, NoteStorageError
 from .config import BUILTIN_PROFILES, ConfigManager, ConfigurationError, ModelProfile
 from .doctor import run_doctor
+from .evals import EvalCaseError, EvalRunner
+from .execution import ExecutionBackend, backend_from_policy
+from .policy import PolicyError, ProjectPolicy, load_project_policy
 from .rendering import render_markdown
+from .runs import RunStorageError, RunStore
 from .services.llm import LLMRequestError, LLMService
 from .services.prompts import ROLE_PROMPTS, UnknownRoleError
+from .telemetry import TelemetryCollector
 from .tools import (
+    ApplyPatchTool,
     GitTool,
     ListFilesTool,
     NoteSearchTool,
+    ProjectCheckTool,
     ReadFileTool,
     ToolRegistry,
     WriteFileTool,
@@ -49,19 +56,33 @@ def _config_manager() -> ConfigManager:
     return ConfigManager(Path(override) if override else None)
 
 
-def _agent_tools(allowed: set[str] | None = None) -> ToolRegistry:
+def _agent_tools(
+    allowed: set[str] | None = None,
+    *,
+    policy: ProjectPolicy | None = None,
+    backend: ExecutionBackend | None = None,
+) -> ToolRegistry:
     capabilities = allowed or set()
+    project_policy = policy or ProjectPolicy()
     tools = [ListFilesTool(), ReadFileTool(), NoteSearchTool(_note_manager())]
     if "write" in capabilities:
-        tools.append(WriteFileTool())
+        tools.extend((WriteFileTool(), ApplyPatchTool()))
     if "git" in capabilities:
         tools.append(GitTool())
+    if "check" in capabilities:
+        check_backend = backend or backend_from_policy(project_policy)
+        tools.append(ProjectCheckTool(check_backend, project_policy))
     return ToolRegistry(tools)
 
 
 def _audit_logger() -> AuditLogger:
     override = os.getenv("SMARTCLI_AUDIT_PATH")
     return AuditLogger(Path(override) if override else None)
+
+
+def _run_store() -> RunStore:
+    override = os.getenv("SMARTCLI_RUNS_PATH")
+    return RunStore(Path(override) if override else None)
 
 
 def _add_json_option(parser: argparse.ArgumentParser) -> None:
@@ -104,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--allow",
         action="append",
-        choices=("write", "git"),
+        choices=("write", "git", "check"),
         default=[],
         help="Enable an Agent capability; repeat for multiple capabilities",
     )
@@ -112,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Inspect and plan while skipping file writes",
+        help="Inspect and plan while skipping side-effecting tools",
     )
     agent_parser.add_argument(
         "--approve-risky",
@@ -190,6 +211,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_option(doctor_parser)
     doctor_parser.set_defaults(handler=_handle_doctor)
+
+    run_parser = commands.add_parser("run", help="Inspect and undo Agent runs")
+    run_commands = run_parser.add_subparsers(dest="run_action", required=True)
+    run_list = run_commands.add_parser("list", help="List Agent runs")
+    _add_json_option(run_list)
+    run_list.set_defaults(handler=_handle_run_list)
+    run_show = run_commands.add_parser("show", help="Show a redacted Agent run report")
+    run_show.add_argument("id")
+    _add_json_option(run_show)
+    run_show.set_defaults(handler=_handle_run_show)
+    run_undo = run_commands.add_parser("undo", help="Undo unchanged files from an Agent run")
+    run_undo.add_argument("id")
+    _add_json_option(run_undo)
+    run_undo.set_defaults(handler=_handle_run_undo)
+
+    eval_parser = commands.add_parser("eval", help="Run deterministic Agent evaluations")
+    eval_commands = eval_parser.add_subparsers(dest="eval_action", required=True)
+    eval_run = eval_commands.add_parser("run", help="Run one eval case or suite")
+    eval_run.add_argument("path")
+    eval_run.add_argument(
+        "--model", help="Explicitly use a configured model instead of scripted decisions"
+    )
+    _add_json_option(eval_run)
+    eval_run.set_defaults(handler=_handle_eval_run)
+    eval_report = eval_commands.add_parser("report", help="Show a saved eval report")
+    eval_report.add_argument("id")
+    _add_json_option(eval_report)
+    eval_report.set_defaults(handler=_handle_eval_report)
     return parser
 
 
@@ -280,6 +329,7 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
     piped = read_piped_input(stdin)
     task = combine_input(args.task, piped)
     allowed = set(args.allow)
+    policy = load_project_policy(workspace)
     config = _config_manager().load()
     model = args.model or config["default_model"]
 
@@ -304,24 +354,61 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
         if (args.verbose or args.dry_run) and kind not in {"thought", "final"}:
             print(f"{kind.title()}: {content}", file=stderr)
 
+    service = LLMService(model)
     logger = _audit_logger()
+    journal = _run_store().start(workspace, task)
+    telemetry = TelemetryCollector(execution_backend=policy.execution.backend)
+
+    def persist_telemetry() -> None:
+        try:
+            journal.set_telemetry(telemetry.to_dict())
+        except RunStorageError as exc:
+            print(f"Telemetry warning: {exc}", file=stderr)
 
     def audit(event: dict[str, Any]) -> None:
         logger.record({**event, "arguments": summarize_arguments(event["arguments"])})
 
     agent = ReActAgent(
-        LLMService(model),
-        _agent_tools(allowed),
+        service,
+        _agent_tools(allowed, policy=policy),
         workspace=workspace,
+        workspace_policy=policy.workspace,
         confirm=confirm,
         on_event=on_event,
         audit=audit,
         dry_run=args.dry_run,
         max_steps=args.max_steps,
+        run_id=journal.run_id,
+        before_action=journal.prepare_action,
+        after_action=journal.record_action,
+        telemetry=telemetry,
+        verification_provider=lambda: journal.verification(
+            policy.checks.required
+        ).to_dict(),
     )
-    result = agent.run(task)
+    try:
+        result = agent.run(task)
+    except Exception as exc:
+        try:
+            persist_telemetry()
+            journal.set_verification(journal.verification(policy.checks.required))
+            journal.fail(str(exc))
+        except RunStorageError:
+            pass
+        raise
     if not result.success:
+        persist_telemetry()
+        journal.set_verification(journal.verification(policy.checks.required))
+        journal.fail(result.final)
         raise AgentError(result.final)
+    persist_telemetry()
+    verification = journal.verification(policy.checks.required)
+    journal.complete(
+        final=result.final,
+        steps=result.steps,
+        plan=result.plan,
+        verification=verification,
+    )
     if not _emit_json(
         args,
         stdout,
@@ -330,9 +417,14 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
             "model": model,
             "steps": result.steps,
             "plan": list(result.plan),
+            "run_id": journal.run_id,
+            "telemetry": telemetry.to_dict(),
+            "verification": verification.to_dict(),
         },
     ):
         render_markdown(result.final, stdout)
+        print(f"Run ID: {journal.run_id}", file=stderr)
+        print(f"Verification: {verification.status}", file=stderr)
 
 
 def _handle_note_add(
@@ -477,6 +569,62 @@ def _handle_doctor(
         args.exit_code = 1
 
 
+def _handle_run_list(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    reports = _run_store().list()
+    if _emit_json(args, stdout, reports):
+        return
+    for report in reports:
+        print(
+            f"{report['run_id']}  {report['status']}  "
+            f"actions={report['actions']} changes={report['changes']}  "
+            f"{report['task_preview']}",
+            file=stdout,
+        )
+
+
+def _handle_run_show(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    report = _run_store().public_report(args.id)
+    if not _emit_json(args, stdout, report):
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=stdout)
+
+
+def _handle_run_undo(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    result = _run_store().undo(args.id)
+    if not _emit_json(args, stdout, result):
+        print(
+            f"Undid {args.id}: restored={len(result['restored'])}, "
+            f"removed={len(result['removed'])}",
+            file=stdout,
+        )
+
+
+def _handle_eval_run(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    report = EvalRunner(model_name=args.model).run(args.path)
+    args.exit_code = 0 if report.passed else 1
+    if not _emit_json(args, stdout, report.to_dict()):
+        print(
+            f"Eval {report.report_id}: {'PASS' if report.passed else 'FAIL'} "
+            f"({len(report.cases)} case(s))",
+            file=stdout,
+        )
+
+
+def _handle_eval_report(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    report = EvalRunner().get_report(args.id)
+    if not _emit_json(args, stdout, report):
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=stdout)
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -494,10 +642,13 @@ def run(
         AgentError,
         AuditLogError,
         ConfigurationError,
+        EvalCaseError,
         InputError,
         LLMRequestError,
         NoteNotFoundError,
         NoteStorageError,
+        PolicyError,
+        RunStorageError,
         UnknownRoleError,
         ValueError,
     ) as exc:

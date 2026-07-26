@@ -4,9 +4,13 @@ import hashlib
 
 import pytest
 
+from smartcli.execution import ExecutionResult
+from smartcli.policy import ChecksPolicy, ExecutionPolicy, ProjectPolicy, WorkspacePolicy
 from smartcli.tools import (
+    ApplyPatchTool,
     GitTool,
     ListFilesTool,
+    ProjectCheckTool,
     ReadFileTool,
     RiskLevel,
     ToolContext,
@@ -82,6 +86,21 @@ def test_file_tools_block_credentials_but_allow_env_templates(tmp_path):
     ).success
 
 
+def test_file_writes_obey_project_workspace_policy(tmp_path):
+    context = ToolContext(
+        tmp_path,
+        WorkspacePolicy(writable=("src/**",), protected=("src/generated/**",)),
+    )
+    allowed = WriteFileTool().execute({"path": "src/app.py", "content": "pass\n"}, context)
+    outside = WriteFileTool().execute({"path": "README.md", "content": "blocked"}, context)
+    protected = WriteFileTool().execute(
+        {"path": "src/generated/api.py", "content": "blocked"}, context
+    )
+    assert allowed.success
+    assert not outside.success and "project policy" in outside.output
+    assert not protected.success and "project policy" in protected.output
+
+
 def test_list_files_discovers_project_structure_without_sensitive_or_generated_paths(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("pass", encoding="utf-8")
@@ -115,3 +134,71 @@ def test_git_tool_only_builds_fixed_read_only_commands(tmp_path, monkeypatch):
     monkeypatch.setattr("smartcli.tools.git.shutil.which", lambda name: str(fake_git))
     refused = tool.execute({"operation": "status"}, ToolContext(tmp_path))
     assert not refused.success and "inside the workspace" in refused.output
+
+
+def test_project_check_tool_only_runs_policy_approved_commands(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+
+    class FakeBackend:
+        name = "fake"
+
+        def run(self, request):
+            captured["request"] = request
+            return ExecutionResult(0, "79 passed", "", 25, False, self.name)
+
+    policy = ProjectPolicy(
+        execution=ExecutionPolicy(timeout_seconds=20),
+        checks=ChecksPolicy(allowed=("tests",), required=("tests",)),
+    )
+    tool = ProjectCheckTool(FakeBackend(), policy)
+    assert tool.assess_risk({"check": "tests"})[0] is RiskLevel.HIGH
+    result = tool.execute({"check": "tests", "timeout_seconds": 30}, ToolContext(tmp_path))
+    assert result.success and result.metadata["exit_code"] == 0
+    assert result.metadata["backend"] == "fake" and result.metadata["elapsed_ms"] == 25
+    assert captured["request"].command == ("python", "-m", "pytest")
+    assert captured["request"].workspace == tmp_path
+    assert captured["request"].timeout_seconds == 20
+    unsupported = tool.execute({"check": "deploy"}, ToolContext(tmp_path))
+    assert not unsupported.success and "Unsupported" in unsupported.output
+    blocked = ProjectCheckTool(
+        FakeBackend(), ProjectPolicy(checks=ChecksPolicy(allowed=("lint",)))
+    ).execute({"check": "tests"}, ToolContext(tmp_path))
+    assert not blocked.success and "not allowed by project policy" in blocked.output
+
+
+def test_apply_patch_requires_hash_and_exact_occurrence_count(tmp_path):
+    path = tmp_path / "value.py"
+    path.write_text("answer = 1\n", encoding="utf-8")
+    current_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    tool = ApplyPatchTool()
+    result = tool.execute(
+        {
+            "path": "value.py",
+            "expected_sha256": current_hash,
+            "replacements": [{"old": "answer = 1", "new": "answer = 2"}],
+        },
+        ToolContext(tmp_path),
+    )
+    assert result.success and path.read_text(encoding="utf-8") == "answer = 2\n"
+    assert result.metadata["before_sha256"] == current_hash
+    stale = tool.execute(
+        {
+            "path": "value.py",
+            "expected_sha256": current_hash,
+            "replacements": [{"old": "answer = 2", "new": "answer = 3"}],
+        },
+        ToolContext(tmp_path),
+    )
+    assert not stale.success and "changed since" in stale.output
+    wrong_count = tool.execute(
+        {
+            "path": "value.py",
+            "expected_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "replacements": [
+                {"old": "answer", "new": "result", "expected_occurrences": 2}
+            ],
+        },
+        ToolContext(tmp_path),
+    )
+    assert not wrong_count.success and "found 1" in wrong_count.output

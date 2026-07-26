@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "create_summary",
+  "task": "Create summary.txt containing the word ready.",
+  "capabilities": ["write"],
+  "required_checks": [],
+  "expected_changed_paths": ["summary.txt"],
+  "forbidden_paths": [".git/**", ".env*"],
+  "max_steps": 2,
+  "predicates": [
+    {
+      "path": "summary.txt",
+      "contains": ["ready"],
+      "does_not_contain": ["secret"]
+    }
+  ],
+  "decisions": [
+    {
+      "thought": "create the requested file",
+      "action": {
+        "tool": "write_file",
+        "arguments": {
+          "path": "summary.txt",
+          "content": "ready\n"
+        }
+      }
+    },
+    {
+      "thought": "the requested file is created",
+      "final": "Created summary.txt."
+    }
+  ]
+}

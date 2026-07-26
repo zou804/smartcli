@@ -19,6 +19,7 @@ from openai import (
 )
 
 from ..config import ConfigManager, ConfigurationError, ModelProfile, get_model_config
+from ..telemetry import TokenUsage
 
 
 class LLMRequestError(RuntimeError):
@@ -34,13 +35,23 @@ class ResponseText(str):
 
     truncated: bool
     attempts: int
+    duration_ms: int
+    usage: TokenUsage | None
 
     def __new__(
-        cls, value: str, *, truncated: bool = False, attempts: int = 1
+        cls,
+        value: str,
+        *,
+        truncated: bool = False,
+        attempts: int = 1,
+        duration_ms: int = 0,
+        usage: TokenUsage | None = None,
     ) -> ResponseText:
         instance = super().__new__(cls, value)
         instance.truncated = truncated
         instance.attempts = attempts
+        instance.duration_ms = duration_ms
+        instance.usage = usage
         return instance
 
 
@@ -52,10 +63,12 @@ class OpenAICompatibleAdapter:
         client: Any | None = None,
         environ: Mapping[str, str] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
         env_prefix: str | None = None,
     ) -> None:
         self.config = profile
         self.sleep = sleep
+        self.clock = clock
         environment = os.environ if environ is None else environ
         if environ is None:
             load_dotenv(override=False)
@@ -79,6 +92,7 @@ class OpenAICompatibleAdapter:
         )
 
     def request(self, messages: Sequence[Mapping[str, str]]) -> ResponseText:
+        started = self.clock()
         attempts = 0
         while True:
             attempts += 1
@@ -114,6 +128,8 @@ class OpenAICompatibleAdapter:
             content,
             truncated=getattr(choice, "finish_reason", None) == "length",
             attempts=attempts,
+            duration_ms=max(0, round((self.clock() - started) * 1000)),
+            usage=_token_usage(getattr(response, "usage", None)),
         )
 
     @staticmethod
@@ -142,6 +158,7 @@ class LLMService:
         environ: Mapping[str, str] | None = None,
         manager: ConfigManager | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.model_name = model_name
         self.config = get_model_config(model_name, manager=manager)
@@ -153,6 +170,7 @@ class LLMService:
             client=client,
             environ=environ,
             sleep=sleep,
+            clock=clock,
             env_prefix=model_name.upper().replace("-", "_")
         )
 
@@ -162,3 +180,17 @@ class LLMService:
 
     def request(self, messages: Sequence[Mapping[str, str]]) -> ResponseText:
         return self.adapter.request(messages)
+
+
+def _token_usage(value: Any) -> TokenUsage | None:
+    fields = (
+        getattr(value, "prompt_tokens", None),
+        getattr(value, "completion_tokens", None),
+        getattr(value, "total_tokens", None),
+    )
+    valid = all(
+        isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in fields
+    )
+    if not valid:
+        return None
+    return TokenUsage(*fields)

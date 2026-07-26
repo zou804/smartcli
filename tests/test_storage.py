@@ -152,3 +152,12 @@ def test_invalid_note_fields_are_reported_as_storage_errors(tmp_path):
     path.write_text(json.dumps([{"id": "bad", "tags": "python"}]), encoding="utf-8")
     with pytest.raises(NoteStorageError, match="tags"):
         NoteManager(path)
+
+
+def test_stale_note_managers_merge_updates_instead_of_overwriting(tmp_path):
+    path = tmp_path / "notes.json"
+    first = NoteManager(path)
+    second = NoteManager(path)
+    first.add("first")
+    second.add("second")
+    assert {note.content for note in NoteManager(path).list_all()} == {"first", "second"}

@@ -9,6 +9,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from ..policy import WorkspacePolicy
+
 
 class RiskLevel(StrEnum):
     SAFE = "safe"
@@ -20,6 +22,7 @@ class RiskLevel(StrEnum):
 @dataclass(frozen=True)
 class ToolContext:
     workspace: Path
+    workspace_policy: WorkspacePolicy | None = None
 
 
 @dataclass(frozen=True)

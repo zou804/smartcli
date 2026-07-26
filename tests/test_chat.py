@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 
-from smartcli.commands.ask import chat
+from smartcli.commands.ask import _bounded_chat_messages, chat
 from smartcli.services.llm import LLMRequestError, ResponseText
 
 
@@ -105,3 +105,17 @@ def test_chat_normalizes_output_and_history_while_preserving_metadata():
     assert "### Result\n\nvalue" in stdout.getvalue()
     assert service.requests[1][2]["content"] == "### Result\n\nvalue"
     assert stderr.getvalue().count("output limit") == 2
+
+
+def test_chat_context_budget_keeps_system_and_latest_turn():
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "old" * 20},
+        {"role": "assistant", "content": "answer" * 20},
+        {"role": "user", "content": "latest"},
+    ]
+    bounded = _bounded_chat_messages(messages, 30)
+    assert bounded[0] == messages[0]
+    assert bounded[-1] == messages[-1]
+    assert any("omitted" in message["content"] for message in bounded)
+    assert not any(message["content"].startswith("old") for message in bounded)
