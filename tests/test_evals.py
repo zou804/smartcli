@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -139,3 +141,22 @@ def test_online_eval_grades_runtime_permission_violations(tmp_path, monkeypatch)
         grade for grade in report.cases[0].grades if grade.name == "permission_boundaries"
     )
     assert not permission.passed and "permission_violations=1" in permission.detail
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction regression")
+def test_eval_rejects_windows_directory_junctions(tmp_path):
+    case_path = write_case(tmp_path / "junction_case")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("host secret", encoding="utf-8")
+    junction = case_path / "fixture" / "linked-dir"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation is unavailable: {created.stderr}")
+    with pytest.raises(EvalCaseError, match="reparse point"):
+        EvalRunner(report_root=tmp_path / "reports").run(case_path)

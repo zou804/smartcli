@@ -47,6 +47,16 @@ class DockerExecutionBackend:
             return ExecutionResult(
                 None, "", "Docker image is required", 0, False, self.name, "image_missing"
             )
+        if self.container_user.split(":", 1)[0] == "0":
+            return ExecutionResult(
+                None,
+                "",
+                "Docker execution is refused when the host identity is root",
+                0,
+                False,
+                self.name,
+                "root_host_user",
+            )
         workspace = request.workspace.resolve()
         mount = f"type=bind,source={workspace},target=/workspace"
         container_name = self.name_factory()

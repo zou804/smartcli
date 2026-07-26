@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -195,10 +196,28 @@ def _offline_llm(case: EvalCase) -> _ScriptedLLM:
 
 
 def _reject_fixture_links(fixture: Path) -> None:
-    for path in fixture.rglob("*"):
-        if path.is_symlink():
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def inspect(directory: Path) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise EvalCaseError(f"Cannot inspect eval fixture: {exc}") from exc
+        for entry in entries:
+            path = Path(entry.path)
             relative = path.relative_to(fixture).as_posix()
-            raise EvalCaseError(f"Eval fixture contains a symbolic link: {relative}")
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise EvalCaseError(f"Cannot inspect eval fixture path {relative}: {exc}") from exc
+            if entry.is_symlink():
+                raise EvalCaseError(f"Eval fixture contains a symbolic link: {relative}")
+            if getattr(info, "st_file_attributes", 0) & reparse_flag:
+                raise EvalCaseError(f"Eval fixture contains a reparse point: {relative}")
+            if entry.is_dir(follow_symlinks=False):
+                inspect(path)
+
+    inspect(fixture)
 
 
 def _tools(case: EvalCase, policy: Any, backend: Any) -> ToolRegistry:

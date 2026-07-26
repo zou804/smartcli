@@ -128,3 +128,20 @@ def test_docker_backend_force_removes_container_after_timeout(tmp_path):
     ).run(request(tmp_path, image="project:test", timeout_seconds=3))
     assert result.timed_out and result.error_type == "timeout"
     assert calls[-1] == ["docker", "rm", "--force", "smartcli-timeout"]
+
+
+def test_docker_backend_refuses_root_host_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr("smartcli.execution.docker.os.getuid", lambda: 0, raising=False)
+    monkeypatch.setattr("smartcli.execution.docker.os.getgid", lambda: 0, raising=False)
+    called = False
+
+    def forbidden(*args, **kwargs):
+        nonlocal called
+        called = True
+        return Completed()
+
+    result = DockerExecutionBackend(docker_executable="docker", runner=forbidden).run(
+        request(tmp_path, image="project:test")
+    )
+    assert not result.success and result.error_type == "root_host_user"
+    assert called is False
