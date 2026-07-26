@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import platform
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from ..memory import LongTermMemory, NullLongTermMemory, ShortTermMemory
 from ..output_style import normalize_terminal_markdown
 from ..policy import WorkspacePolicy
 from ..services.llm import LLMRequestError
+from ..telemetry import TelemetryCollector, TokenUsage
 from ..tools import RiskLevel, ToolContext, ToolRegistry, ToolResult
 from .prompts import build_system_prompt
 from .protocol import AgentDecision, ProtocolError, parse_decision
@@ -58,6 +60,8 @@ class ReActAgent:
         run_id: str | None = None,
         before_action: BeforeActionCallback | None = None,
         after_action: AfterActionCallback | None = None,
+        telemetry: TelemetryCollector | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -77,8 +81,17 @@ class ReActAgent:
         self.after_action = after_action or (
             lambda tool, arguments, result, checkpoint: None
         )
+        self.telemetry = telemetry
+        self.clock = clock
 
     def run(self, task: str) -> AgentResult:
+        try:
+            return self._run(task)
+        finally:
+            if self.telemetry is not None:
+                self.telemetry.finish()
+
+    def _run(self, task: str) -> AgentResult:
         task = task.strip()
         if not task:
             raise AgentError("Agent task cannot be empty")
@@ -153,16 +166,35 @@ class ReActAgent:
         ]
         response = None
         for attempt in range(self.model_retries + 1):
+            started = self.clock()
             try:
                 response = self.llm.request(messages)
+                if self.telemetry is not None:
+                    reported_duration = getattr(response, "duration_ms", None)
+                    duration = (
+                        reported_duration
+                        if isinstance(reported_duration, int)
+                        else max(0, round((self.clock() - started) * 1000))
+                    )
+                    usage = getattr(response, "usage", None)
+                    self.telemetry.record_model(
+                        duration,
+                        attempts=int(getattr(response, "attempts", 1)),
+                        usage=usage if isinstance(usage, TokenUsage) else None,
+                    )
                 break
             except LLMRequestError:
+                if self.telemetry is not None:
+                    elapsed = max(0, round((self.clock() - started) * 1000))
+                    self.telemetry.record_model(elapsed)
                 if attempt >= self.model_retries:
                     raise
         assert response is not None
         try:
             return parse_decision(str(response))
         except ProtocolError as exc:
+            if self.telemetry is not None:
+                self.telemetry.record_protocol_error()
             observation = f"Protocol error: {exc}. Return one valid JSON object."
             self.memory.add("observation", observation)
             self.on_event("observation", observation)
@@ -190,13 +222,26 @@ class ReActAgent:
             if risk in {RiskLevel.REVIEW, RiskLevel.HIGH} and not self.confirm(
                 action.tool, action.arguments, reason
             ):
+                if self.telemetry is not None:
+                    self.telemetry.record_denial()
                 self._audit_action(action.tool, action.arguments, risk, reason, False, False, False)
                 return ToolResult(
                     False, f"User denied {risk.value}-risk action: {reason}"
                 ).observation()
             self._audit_action(action.tool, action.arguments, risk, reason, True, False, False)
             checkpoint = self.before_action(action.tool, action.arguments, self.context)
+            started = self.clock()
             result = tool.execute(action.arguments, self.context)
+            elapsed = max(0, round((self.clock() - started) * 1000))
+            if self.telemetry is not None:
+                backend = result.metadata.get("backend")
+                self.telemetry.record_tool(
+                    action.tool,
+                    elapsed,
+                    success=result.success,
+                    output_truncated=len(result.output) > 12_000,
+                    backend=backend if isinstance(backend, str) else None,
+                )
             observation = result.observation()
             try:
                 self.after_action(action.tool, action.arguments, result, checkpoint)

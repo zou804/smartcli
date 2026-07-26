@@ -75,6 +75,26 @@ def test_length_finish_reason_marks_response_as_truncated():
     assert answer.truncated is True
 
 
+def test_provider_usage_and_duration_are_attached_to_response():
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="measured"))],
+        usage=SimpleNamespace(prompt_tokens=12, completion_tokens=4, total_tokens=16),
+    )
+    client, _ = client_for(response)
+    ticks = iter((2.0, 2.125))
+    service = LLMService(
+        "deepseek",
+        client=client,
+        environ={"DEEPSEEK_API_KEY": "fake"},
+        clock=lambda: next(ticks),
+    )
+    answer = service.request([])
+    assert answer.duration_ms == 125
+    assert answer.usage.prompt_tokens == 12
+    assert answer.usage.completion_tokens == 4
+    assert answer.usage.total_tokens == 16
+
+
 @pytest.mark.parametrize(
     "response",
     [

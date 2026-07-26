@@ -109,6 +109,10 @@ class RunJournal:
         )
         self.store._write(self.document)
 
+    def set_telemetry(self, value: dict[str, Any]) -> None:
+        self.document["telemetry"] = value
+        self.store._write(self.document)
+
     def fail(self, error: str) -> None:
         self.document.update(
             {
@@ -140,6 +144,7 @@ class RunStore:
             },
             "actions": [],
             "changes": [],
+            "telemetry": None,
             "result": None,
         }
         self._write(document)

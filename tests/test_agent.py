@@ -7,6 +7,8 @@ import pytest
 from smartcli.agent import AgentError, ReActAgent, parse_decision
 from smartcli.agent.protocol import ProtocolError
 from smartcli.memory import ShortTermMemory
+from smartcli.services.llm import ResponseText
+from smartcli.telemetry import TelemetryCollector, TokenUsage
 from smartcli.tools import RiskLevel, Tool, ToolContext, ToolRegistry, ToolResult
 
 
@@ -224,3 +226,35 @@ def test_post_execution_audit_failure_does_not_turn_success_into_failure(tmp_pat
     assert result.success and result.final == "completed"
     assert "Tool status: success" in llm.requests[1][1]["content"]
     assert "Audit warning" in llm.requests[1][1]["content"]
+
+
+def test_agent_records_model_protocol_denial_and_tool_telemetry(tmp_path):
+    responses = [
+        ResponseText("bad", duration_ms=10, usage=TokenUsage(3, 1, 4)),
+        ResponseText(
+            decision(thought="try", action={"tool": "danger", "arguments": {"text": "x"}}),
+            duration_ms=20,
+        ),
+        ResponseText(
+            decision(thought="read", action={"tool": "echo", "arguments": {"text": "ok"}}),
+            duration_ms=30,
+        ),
+        ResponseText(decision(thought="done", final="complete"), duration_ms=40),
+    ]
+    ticks = iter((1.0, 1.2))
+    telemetry = TelemetryCollector(clock=lambda: next(ticks))
+    agent = ReActAgent(
+        FakeLLM(responses),
+        ToolRegistry([EchoTool(), HighRiskTool()]),
+        workspace=tmp_path,
+        confirm=lambda tool, arguments, reason: False,
+        telemetry=telemetry,
+        clock=lambda: 5.0,
+    )
+    assert agent.run("measure").success
+    value = telemetry.to_dict()
+    assert value["duration_ms"] == 200 and value["model"]["calls"] == 4
+    assert value["model"]["duration_ms"] == 100
+    assert value["model"]["total_tokens"] == 4
+    assert value["protocol_errors"] == 1 and value["approval_denials"] == 1
+    assert value["tools"]["by_name"]["echo"]["calls"] == 1

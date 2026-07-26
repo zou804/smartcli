@@ -32,6 +32,7 @@ from .rendering import render_markdown
 from .runs import RunStorageError, RunStore
 from .services.llm import LLMRequestError, LLMService
 from .services.prompts import ROLE_PROMPTS, UnknownRoleError
+from .telemetry import TelemetryCollector
 from .tools import (
     ApplyPatchTool,
     GitTool,
@@ -341,6 +342,13 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
     service = LLMService(model)
     logger = _audit_logger()
     journal = _run_store().start(workspace, task)
+    telemetry = TelemetryCollector(execution_backend=policy.execution.backend)
+
+    def persist_telemetry() -> None:
+        try:
+            journal.set_telemetry(telemetry.to_dict())
+        except RunStorageError as exc:
+            print(f"Telemetry warning: {exc}", file=stderr)
 
     def audit(event: dict[str, Any]) -> None:
         logger.record({**event, "arguments": summarize_arguments(event["arguments"])})
@@ -358,18 +366,22 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
         run_id=journal.run_id,
         before_action=journal.prepare_action,
         after_action=journal.record_action,
+        telemetry=telemetry,
     )
     try:
         result = agent.run(task)
     except Exception as exc:
         try:
+            persist_telemetry()
             journal.fail(str(exc))
         except RunStorageError:
             pass
         raise
     if not result.success:
+        persist_telemetry()
         journal.fail(result.final)
         raise AgentError(result.final)
+    persist_telemetry()
     journal.complete(final=result.final, steps=result.steps, plan=result.plan)
     if not _emit_json(
         args,
@@ -380,6 +392,7 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
             "steps": result.steps,
             "plan": list(result.plan),
             "run_id": journal.run_id,
+            "telemetry": telemetry.to_dict(),
         },
     ):
         render_markdown(result.final, stdout)
