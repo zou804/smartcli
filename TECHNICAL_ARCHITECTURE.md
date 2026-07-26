@@ -8,12 +8,16 @@ SmartCLI 采用 Python `src` 布局，CLI、模型服务、Agent 编排、工具
 CLI / JSON contract
   |-- ask / chat -----------------> LLMService
   |-- note / config --------------> JSON storage + process lock
+  |-- eval -----------------------> EvalRunner -> disposable workspace + graders
   `-- agent ----------------------> ReActAgent
                                       |-- ShortTermMemory
                                       |-- ToolRegistry
                                       |     |-- files / git / notes
-                                      |     `-- project checks
-                                      `-- AuditLogger
+                                      |     `-- ProjectCheckTool
+                                      |           `-- Local/Docker ExecutionBackend
+                                      |-- VerificationSummary
+                                      |-- TelemetryCollector
+                                      `-- AuditLogger / RunJournal
 ```
 
 ## 2. 主要模块
@@ -27,6 +31,11 @@ CLI / JSON contract
 - `smartcli.storage`：Windows/POSIX 跨进程文件锁；
 - `smartcli.runs`：运行报告、文件检查点和哈希保护撤销；
 - `smartcli.audit`：隐私友好的 JSONL 工具审计；
+- `smartcli.policy`：严格解析仓库策略，策略只收紧命令行权限；
+- `smartcli.execution`：Local/Docker 检查执行协议、超时、资源与错误分类；
+- `smartcli.verification`：根据动作顺序归约验证证据；
+- `smartcli.telemetry`：聚合无内容的调用、耗时、重试和 token 指标；
+- `smartcli.evals`：一次性 fixture、脚本化/显式真实模型运行和确定性 graders；
 - `smartcli.output_style` / `rendering`：Markdown 规范化和终端渲染。
 
 ## 3. Agent 协议
@@ -52,8 +61,12 @@ Git 工具只构造枚举化只读参数数组，不通过 shell。项目检查�
 - `compile`：`python -m compileall -q src tests`
 
 项目检查可能执行仓库代码，因此风险为 `high`，必须显式开放能力并逐次确认。
-检查进程只继承运行所需的基础环境变量，不继承 API Key 等敏感变量。当前实现不提供操作系统级
-文件或网络隔离，因此不能把 `--allow check` 用于不可信仓库；后续应接入容器或宿主沙箱。
+Local 检查进程只继承基础环境变量，不继承 API Key 等敏感变量，但不提供操作系统级隔离。
+Docker 后端以 `--network none`、`no-new-privileges`、`cap-drop ALL`、非 root 用户、内存/CPU/PID
+限制和单一 workspace bind mount 启动。Docker CLI、daemon 或镜像错误分别报告，绝不降级到 Local。
+
+`smartcli.toml` 在 CLI 授权之后进一步限制 backend、超时/资源、可写/保护路径和允许/必需检查；
+未知字段或不安全路径立即失败。当前网络策略只允许 `none`。
 
 ## 5. 存储一致性
 
@@ -73,7 +86,8 @@ Git 工具只构造枚举化只读参数数组，不通过 shell。项目检查�
 ## 7. 运行报告与撤销
 
 CLI Agent 启动时创建唯一 `run_id`。报告记录任务哈希与短预览、workspace、工具动作摘要、工具
-结果元数据、最终计划和状态。文件写入前，RunJournal 将修改前正文和权限保存到用户数据目录；
+结果元数据、最终计划、遥测、验证证据和状态。验证只认可最后一次成功写入之后的检查，避免旧测试
+结果被后续修改冒充。文件写入前，RunJournal 将修改前正文和权限保存到用户数据目录；
 公开报告会过滤正文和权限。
 
 撤销按变更的逆序执行。开始前验证每个文件仍匹配该运行最后写入的 SHA-256；不匹配时拒绝整个
@@ -93,8 +107,8 @@ CLI Agent 启动时创建唯一 `run_id`。报告记录任务哈希与短预览�
 
 ## 9. 测试与发布
 
-测试覆盖 CLI 契约、Agent 协议、权限确认、文件安全、Git 参数构造、模型重试、存储失败回滚、
-并发快照合并、上下文预算、审计异常和 Markdown 输出。CI 在 Windows/Linux 与多个 Python 版本上
-执行 Ruff、pytest、构建、wheel 安装、CLI smoke test 和 `pip check`。
+测试覆盖 CLI 契约、Agent 协议、策略解析、Local/Docker 参数、权限确认、文件安全、验证归约、
+遥测、确定性 eval、模型重试、存储与审计异常。CI 在 Windows/Linux 与多个 Python 版本上执行
+Ruff、pytest、compileall、离线 eval、构建、wheel 安装、CLI smoke test 和 `pip check`。
 
 发布元数据位于 `pyproject.toml`，控制台入口为 `smartcli = smartcli.cli:main`。

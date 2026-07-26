@@ -1,3 +1,5 @@
 include AGENT_PROTOCOL.md
 include PRODUCT_DESIGN.md
 include TECHNICAL_ARCHITECTURE.md
+include smartcli.example.toml
+recursive-include evals *

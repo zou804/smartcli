@@ -16,6 +16,7 @@ python -m pip install -e .
 开发环境：
 
 ```bash
+conda activate agent_dev
 python -m pip install -e ".[dev]"
 ```
 
@@ -62,6 +63,7 @@ smartcli agent "检查项目" --json
 smartcli note list --json
 smartcli model list --json
 smartcli doctor --json
+smartcli eval run evals/cases --json
 ```
 
 成功响应使用 `{"ok":true,"command":"...","data":...}`；运行时错误使用 `{"ok":false,"command":"...","error":{"type":"...","message":"..."}}` 并返回非零退出码。交互式 `chat` 不支持 JSON 输出。
@@ -93,7 +95,7 @@ smartcli run undo RUN_ID
 
 Agent 使用 Thought → Action → Observation 闭环，最大步数默认为 12。默认只开放项目结构发现、工作区文件读取和笔记检索。`--allow git` 增加固定的只读 Git 操作，`--allow write` 增加受控文件写入，`--allow check` 增加 `tests`、`lint`、`compile` 三种项目检查；写入和检查都必须逐次交互确认，`--approve-risky` 不能跳过该确认。`--dry-run` 可以读取上下文，但跳过有副作用的工具。
 
-Git 工具只接受 `status`、`diff`、`log`、`show`、`ls_files` 枚举操作，由程序构造参数数组并直接启动 Git。项目检查同样由程序构造参数数组，不解释 shell 语法；由于测试可能执行仓库代码，其风险等级为 high 并要求确认，且不会继承 API Key 等敏感环境变量。当前检查不是操作系统沙箱，不能用于不可信仓库。`shell` 和 `network` 不属于模型可直接调用的工具能力。
+Git 工具只接受 `status`、`diff`、`log`、`show`、`ls_files` 枚举操作，由程序构造参数数组并直接启动 Git。项目检查同样由程序构造参数数组，不解释 shell 语法；由于测试可能执行仓库代码，其风险等级为 high 并要求确认，且不会继承 API Key 等敏感环境变量。Local 后端不是操作系统沙箱，只适用于可信仓库；Docker 后端使用只读能力裁剪、非 root 用户、资源限制、单一 workspace 挂载和 `network=none`，配置失败时不会降级到 Local。`shell` 和 `network` 不属于模型可直接调用的工具能力。
 
 写文件始终限制在 workspace 内，拒绝符号链接、凭据和 `.git` 内部路径，单次上限为 1,000,000 字节。覆盖已有文件时，模型必须提交此前读取内容的 SHA-256；内容发生变化时写入会失败。最终提交使用同目录临时文件和原子替换。
 
@@ -102,6 +104,49 @@ Agent 优先使用 `apply_patch` 对现有 UTF-8 文件做精确文本替换。P
 每次 Agent 运行都会生成 `run_id`，并在用户数据目录的 `smartcli/runs` 保存结构化报告。文件修改前会保存本地检查点；`run undo` 只在当前文件仍匹配 Agent 写入后哈希时恢复，避免覆盖用户后续编辑。检查点包含修改前正文，但不会进入审计日志，也不会由 `run show` 输出。
 
 Agent 工具动作默认记录到用户数据目录的 `smartcli/audit.jsonl`。审计记录包含风险、授权和执行结果，只保存参数键、目标路径及参数哈希，不保存命令或文件正文；测试时可通过 `SMARTCLI_AUDIT_PATH` 覆盖位置。详细协议和安全规则见 [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md)。
+
+## 项目策略与隔离执行
+
+在 workspace 根目录创建 `smartcli.toml`。策略只能收紧 `--allow` 已授予的权限，不能自行开放写入、检查、Git 或网络能力。完整示例也见 [smartcli.example.toml](smartcli.example.toml)：
+
+```toml
+[execution]
+backend = "docker"
+image = "smartcli-project:py311"
+network = "none"
+timeout_seconds = 120
+memory_mb = 512
+cpus = 1.0
+pids_limit = 128
+
+[workspace]
+writable = ["src/**", "tests/**", "docs/**"]
+protected = [".github/**", "migrations/**"]
+
+[checks]
+allowed = ["tests", "lint", "compile"]
+required = ["tests", "lint"]
+```
+
+0.9.0 只接受 `network = "none"`。Docker 镜像必须由用户预先构建或拉取；SmartCLI 不自动拉取镜像，也不会在 Docker CLI、daemon 或镜像不可用时转用本机执行。
+
+## 验证证据与遥测
+
+运行报告从真实工具动作推导 `verified`、`partially_verified`、`failed` 或 `unverified`。只有最后一次成功文件修改之后运行并通过的检查才有效；后续写入会使旧检查证据失效。最终模型步骤会收到机器生成的证据块，普通输出在 stderr 显示状态，JSON 和 `run show` 返回完整检查、后端、退出码与变更文件。
+
+本地遥测记录总耗时、模型调用与重试、供应商返回的 token 用量、工具耗时/成功率、输出截断、协议错误和审批拒绝。供应商不返回 usage 时 token 字段为 `null`，不会伪造精确计数。遥测不接收提示词、文件正文或工具参数。
+
+## 离线 Agent 评测
+
+```bash
+smartcli eval run evals/cases
+smartcli eval run evals/cases --json
+smartcli eval report EVAL_REPORT_ID --json
+# 只有显式指定后才调用真实模型
+smartcli eval run path/to/cases --model ollama
+```
+
+案例由 `case.json` 和 `fixture/` 组成。默认脚本化决策通过真实 ReAct 循环在一次性 workspace 中执行，并确定性评分运行状态、验证检查、预期/禁止变更路径、文件包含/排除断言、步数预算和权限越界；聚合 JSON 与 Markdown 报告保存在用户数据目录的 `smartcli/evals`。
 
 也可以放入当前目录或父目录的 `.env`。API Key 不会写入用户配置、ModelProfile 或由 `config show` 显示。本项目的自动化测试不会访问网络或验证付费模型。
 
@@ -156,11 +201,20 @@ smartcli config set default_role review
 
 ```bash
 python -m compileall -q src tests
-pytest
-ruff check .
+python -m pytest
+python -m ruff check .
 python -m build
 smartcli --help
 smartcli --version
+smartcli eval run evals/cases --json
+```
+
+Docker 集成测试为显式 opt-in，并要求镜像已存在：
+
+```powershell
+$env:SMARTCLI_DOCKER_TEST="1"
+$env:SMARTCLI_DOCKER_IMAGE="python:3.11-slim"
+python -m pytest tests/test_docker_integration.py -v
 ```
 
 ## 已知限制
@@ -171,6 +225,7 @@ smartcli --version
 - 上下文预算当前按字符计算，尚未按具体模型 token 精确估算。
 - 笔记采用带跨进程写锁的单个 JSON 文件，适合个人和中小规模数据。
 - 模型可用性取决于供应商的 OpenAI 兼容接口、账户权限和当前模型 ID。
-- 只支持枚举化 Python 项目检查；不支持安装依赖、任意 shell、网络或 Git 写命令。
+- 只支持枚举化 Python 项目检查；不支持安装依赖、任意 shell、Agent 网络工具或 Git 写命令。
+- Docker 后端不负责构建或拉取镜像；Local 后端不提供操作系统级隔离。
 - JSONL 审计日志当前不会自动轮转。
 - 多文件撤销逐文件原子恢复，但不具备跨文件系统事务语义。

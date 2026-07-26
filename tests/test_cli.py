@@ -36,7 +36,7 @@ def test_help_and_version(capsys):
     with pytest.raises(SystemExit) as version_exit:
         cli.run(["--version"])
     assert version_exit.value.code == 0
-    assert "smartcli 0.8.0" in capsys.readouterr().out
+    assert "smartcli 0.9.0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("role", ROLE_PROMPTS)
@@ -99,6 +99,19 @@ def test_agent_verbose_does_not_print_model_thought(isolated_paths, monkeypatch)
 def test_agent_rejects_invalid_step_limit(isolated_paths):
     code, stdout, stderr = run_cli(["agent", "task", "--max-steps", "0"])
     assert code == 1 and not stdout and "between 1 and 100" in stderr
+
+
+def test_agent_reports_invalid_project_policy_before_model_call(isolated_paths):
+    (isolated_paths / "smartcli.toml").write_text(
+        '[execution]\nnetwork = "host"\n', encoding="utf-8"
+    )
+    code, stdout, stderr = run_cli(
+        ["agent", "inspect", "--workspace", str(isolated_paths), "--json"]
+    )
+    payload = json.loads(stdout)
+    assert code == 1 and not stderr
+    assert payload["error"]["type"] == "PolicyError"
+    assert "network" in payload["error"]["message"]
 
 
 def test_agent_is_read_only_by_default_and_validates_capabilities(isolated_paths, capsys):

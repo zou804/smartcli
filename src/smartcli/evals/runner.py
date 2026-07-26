@@ -145,22 +145,25 @@ class EvalRunner:
         return value
 
     def _write_report(self, report: EvalReport) -> None:
-        self.report_root.mkdir(parents=True, exist_ok=True)
-        value = report.to_dict()
-        (self.report_root / f"{report.report_id}.json").write_text(
-            json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        lines = [
-            f"# SmartCLI Eval Report {report.report_id}",
-            "",
-            f"Overall: {'PASS' if report.passed else 'FAIL'}",
-            "",
-        ]
-        for case in report.cases:
-            lines.append(f"- {'PASS' if case.passed else 'FAIL'} `{case.case_id}`")
-        (self.report_root / f"{report.report_id}.md").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8"
-        )
+        try:
+            self.report_root.mkdir(parents=True, exist_ok=True)
+            value = report.to_dict()
+            (self.report_root / f"{report.report_id}.json").write_text(
+                json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            lines = [
+                f"# SmartCLI Eval Report {report.report_id}",
+                "",
+                f"Overall: {'PASS' if report.passed else 'FAIL'}",
+                "",
+            ]
+            for case in report.cases:
+                lines.append(f"- {'PASS' if case.passed else 'FAIL'} `{case.case_id}`")
+            (self.report_root / f"{report.report_id}.md").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            raise EvalCaseError(f"Cannot write eval report: {exc}") from exc
 
 
 def _discover_cases(path: Path) -> list[Path]:
