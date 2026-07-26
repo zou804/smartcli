@@ -11,6 +11,7 @@ from typing import Any
 
 from ..memory import LongTermMemory, NullLongTermMemory, ShortTermMemory
 from ..output_style import normalize_terminal_markdown
+from ..policy import WorkspacePolicy
 from ..services.llm import LLMRequestError
 from ..tools import RiskLevel, ToolContext, ToolRegistry, ToolResult
 from .prompts import build_system_prompt
@@ -43,6 +44,7 @@ class ReActAgent:
         tools: ToolRegistry,
         *,
         workspace: Path,
+        workspace_policy: WorkspacePolicy | None = None,
         memory: ShortTermMemory | None = None,
         long_term_memory: LongTermMemory | None = None,
         confirm: ConfirmCallback | None = None,
@@ -59,7 +61,7 @@ class ReActAgent:
     ) -> None:
         self.llm = llm
         self.tools = tools
-        self.context = ToolContext(workspace.resolve())
+        self.context = ToolContext(workspace.resolve(), workspace_policy)
         self.memory = memory or ShortTermMemory()
         self.long_term_memory = long_term_memory or NullLongTermMemory()
         self.confirm = confirm or (lambda tool, arguments, reason: False)

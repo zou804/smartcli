@@ -42,6 +42,13 @@ def _workspace_path(workspace: Path, value: str) -> Path:
     return candidate
 
 
+def _write_allowed(path: Path, context: ToolContext) -> bool:
+    if context.workspace_policy is None:
+        return True
+    relative = path.relative_to(context.workspace.resolve()).as_posix()
+    return context.workspace_policy.can_write(relative)
+
+
 class ListFilesTool(Tool):
     name = "list_files"
     description = "List files and directories inside the workspace before choosing files to read."
@@ -166,6 +173,8 @@ class WriteFileTool(Tool):
             path = _workspace_path(context.workspace, str(arguments["path"]))
         except ValueError as exc:
             return ToolResult(False, str(exc))
+        if not _write_allowed(path, context):
+            return ToolResult(False, "Write is blocked by project policy")
         if _is_sensitive_path(path):
             return ToolResult(False, "Access to sensitive credential files is blocked")
         content = str(arguments["content"])
@@ -254,6 +263,8 @@ class ApplyPatchTool(Tool):
             path = _workspace_path(context.workspace, str(arguments["path"]))
         except ValueError as exc:
             return ToolResult(False, str(exc))
+        if not _write_allowed(path, context):
+            return ToolResult(False, "Write is blocked by project policy")
         if _is_sensitive_path(path):
             return ToolResult(False, "Access to sensitive credential files is blocked")
         if not path.is_file():

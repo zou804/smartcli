@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 
+from ..execution import ExecutionBackend, ExecutionRequest
+from ..policy import ProjectPolicy
 from .base import RiskLevel, Tool, ToolContext, ToolResult
 
 
@@ -32,6 +32,10 @@ class ProjectCheckTool(Tool):
         "additionalProperties": False,
     }
 
+    def __init__(self, backend: ExecutionBackend, policy: ProjectPolicy) -> None:
+        self.backend = backend
+        self.policy = policy
+
     def assess_risk(self, arguments: dict[str, object]) -> tuple[RiskLevel, str]:
         check = str(arguments.get("check", ""))
         return RiskLevel.HIGH, f"project check {check!r} may execute repository code"
@@ -40,51 +44,53 @@ class ProjectCheckTool(Tool):
         self.validate(arguments)
         check = str(arguments["check"])
         commands = {
-            "tests": [sys.executable, "-m", "pytest"],
-            "lint": [sys.executable, "-m", "ruff", "check", "."],
-            "compile": [sys.executable, "-m", "compileall", "-q", "src", "tests"],
+            "tests": ("python", "-m", "pytest"),
+            "lint": ("python", "-m", "ruff", "check", "."),
+            "compile": ("python", "-m", "compileall", "-q", "src", "tests"),
         }
         command = commands.get(check)
         if command is None:
             return ToolResult(False, f"Unsupported project check: {check}")
-        timeout = max(1, min(int(arguments.get("timeout_seconds", 120)), 600))
-        allowed_environment = {
-            "COMSPEC",
-            "HOME",
-            "PATH",
-            "PATHEXT",
-            "SYSTEMROOT",
-            "TEMP",
-            "TMP",
-            "USERPROFILE",
-            "WINDIR",
-        }
-        environment = {
-            name: value
-            for name, value in os.environ.items()
-            if name.upper() in allowed_environment
-        }
-        environment.update({"PYTHONNOUSERSITE": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=context.workspace,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=environment,
+        if check not in self.policy.checks.allowed:
+            return ToolResult(False, f"Project check {check!r} is not allowed by project policy")
+        execution = self.policy.execution
+        requested_timeout = max(1, min(int(arguments.get("timeout_seconds", 120)), 600))
+        timeout = min(requested_timeout, execution.timeout_seconds)
+        result = self.backend.run(
+            ExecutionRequest(
+                command=command,
+                workspace=context.workspace,
+                timeout_seconds=timeout,
+                environment=dict(os.environ),
+                network=execution.network,
+                memory_mb=execution.memory_mb,
+                cpus=execution.cpus,
+                pids_limit=execution.pids_limit,
+                image=execution.image,
             )
-        except subprocess.TimeoutExpired:
-            return ToolResult(False, f"Project check timed out after {timeout} seconds")
-        except OSError as exc:
-            return ToolResult(False, f"Project check failed to start: {exc}")
+        )
         output = "\n".join(
-            part for part in (completed.stdout.rstrip(), completed.stderr.rstrip()) if part
+            part for part in (result.stdout.rstrip(), result.stderr.rstrip()) if part
         )
         return ToolResult(
-            completed.returncode == 0,
-            output or f"Project check exited with code {completed.returncode}",
-            {"check": check, "exit_code": completed.returncode, "timeout_seconds": timeout},
+            result.success,
+            output or _result_message(result, timeout),
+            {
+                "check": check,
+                "exit_code": result.exit_code,
+                "timeout_seconds": timeout,
+                "backend": result.backend,
+                "elapsed_ms": result.elapsed_ms,
+                "timed_out": result.timed_out,
+                "error_type": result.error_type,
+            },
         )
+
+
+def _result_message(result: object, timeout: int) -> str:
+    if getattr(result, "timed_out", False):
+        return f"Project check timed out after {timeout} seconds"
+    error_type = getattr(result, "error_type", None)
+    if error_type:
+        return f"Project check failed: {error_type}"
+    return f"Project check exited with code {getattr(result, 'exit_code', None)}"

@@ -4,6 +4,8 @@ import hashlib
 
 import pytest
 
+from smartcli.execution import ExecutionResult
+from smartcli.policy import ChecksPolicy, ExecutionPolicy, ProjectPolicy, WorkspacePolicy
 from smartcli.tools import (
     ApplyPatchTool,
     GitTool,
@@ -84,6 +86,21 @@ def test_file_tools_block_credentials_but_allow_env_templates(tmp_path):
     ).success
 
 
+def test_file_writes_obey_project_workspace_policy(tmp_path):
+    context = ToolContext(
+        tmp_path,
+        WorkspacePolicy(writable=("src/**",), protected=("src/generated/**",)),
+    )
+    allowed = WriteFileTool().execute({"path": "src/app.py", "content": "pass\n"}, context)
+    outside = WriteFileTool().execute({"path": "README.md", "content": "blocked"}, context)
+    protected = WriteFileTool().execute(
+        {"path": "src/generated/api.py", "content": "blocked"}, context
+    )
+    assert allowed.success
+    assert not outside.success and "project policy" in outside.output
+    assert not protected.success and "project policy" in protected.output
+
+
 def test_list_files_discovers_project_structure_without_sensitive_or_generated_paths(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("pass", encoding="utf-8")
@@ -119,30 +136,35 @@ def test_git_tool_only_builds_fixed_read_only_commands(tmp_path, monkeypatch):
     assert not refused.success and "inside the workspace" in refused.output
 
 
-def test_project_check_tool_only_runs_enumerated_python_commands(tmp_path, monkeypatch):
+def test_project_check_tool_only_runs_policy_approved_commands(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
 
-    class Completed:
-        returncode = 0
-        stdout = "79 passed"
-        stderr = ""
+    class FakeBackend:
+        name = "fake"
 
-    def fake_run(command, **kwargs):
-        captured.update(command=command, kwargs=kwargs)
-        return Completed()
+        def run(self, request):
+            captured["request"] = request
+            return ExecutionResult(0, "79 passed", "", 25, False, self.name)
 
-    monkeypatch.setattr("smartcli.tools.checks.subprocess.run", fake_run)
-    tool = ProjectCheckTool()
+    policy = ProjectPolicy(
+        execution=ExecutionPolicy(timeout_seconds=20),
+        checks=ChecksPolicy(allowed=("tests",), required=("tests",)),
+    )
+    tool = ProjectCheckTool(FakeBackend(), policy)
     assert tool.assess_risk({"check": "tests"})[0] is RiskLevel.HIGH
     result = tool.execute({"check": "tests", "timeout_seconds": 30}, ToolContext(tmp_path))
     assert result.success and result.metadata["exit_code"] == 0
-    assert captured["command"][1:] == ["-m", "pytest"]
-    assert captured["kwargs"]["cwd"] == tmp_path
-    assert "shell" not in captured["kwargs"]
-    assert "OPENAI_API_KEY" not in captured["kwargs"]["env"]
+    assert result.metadata["backend"] == "fake" and result.metadata["elapsed_ms"] == 25
+    assert captured["request"].command == ("python", "-m", "pytest")
+    assert captured["request"].workspace == tmp_path
+    assert captured["request"].timeout_seconds == 20
     unsupported = tool.execute({"check": "deploy"}, ToolContext(tmp_path))
     assert not unsupported.success and "Unsupported" in unsupported.output
+    blocked = ProjectCheckTool(
+        FakeBackend(), ProjectPolicy(checks=ChecksPolicy(allowed=("lint",)))
+    ).execute({"check": "tests"}, ToolContext(tmp_path))
+    assert not blocked.success and "not allowed by project policy" in blocked.output
 
 
 def test_apply_patch_requires_hash_and_exact_occurrence_count(tmp_path):

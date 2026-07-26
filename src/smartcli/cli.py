@@ -26,6 +26,8 @@ from .commands.ask import (
 from .commands.note import NoteManager, NoteNotFoundError, NoteStorageError
 from .config import BUILTIN_PROFILES, ConfigManager, ConfigurationError, ModelProfile
 from .doctor import run_doctor
+from .execution import ExecutionBackend, backend_from_policy
+from .policy import PolicyError, ProjectPolicy, load_project_policy
 from .rendering import render_markdown
 from .runs import RunStorageError, RunStore
 from .services.llm import LLMRequestError, LLMService
@@ -52,15 +54,22 @@ def _config_manager() -> ConfigManager:
     return ConfigManager(Path(override) if override else None)
 
 
-def _agent_tools(allowed: set[str] | None = None) -> ToolRegistry:
+def _agent_tools(
+    allowed: set[str] | None = None,
+    *,
+    policy: ProjectPolicy | None = None,
+    backend: ExecutionBackend | None = None,
+) -> ToolRegistry:
     capabilities = allowed or set()
+    project_policy = policy or ProjectPolicy()
     tools = [ListFilesTool(), ReadFileTool(), NoteSearchTool(_note_manager())]
     if "write" in capabilities:
         tools.extend((WriteFileTool(), ApplyPatchTool()))
     if "git" in capabilities:
         tools.append(GitTool())
     if "check" in capabilities:
-        tools.append(ProjectCheckTool())
+        check_backend = backend or backend_from_policy(project_policy)
+        tools.append(ProjectCheckTool(check_backend, project_policy))
     return ToolRegistry(tools)
 
 
@@ -304,6 +313,7 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
     piped = read_piped_input(stdin)
     task = combine_input(args.task, piped)
     allowed = set(args.allow)
+    policy = load_project_policy(workspace)
     config = _config_manager().load()
     model = args.model or config["default_model"]
 
@@ -337,8 +347,9 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
 
     agent = ReActAgent(
         service,
-        _agent_tools(allowed),
+        _agent_tools(allowed, policy=policy),
         workspace=workspace,
+        workspace_policy=policy.workspace,
         confirm=confirm,
         on_event=on_event,
         audit=audit,
@@ -573,6 +584,7 @@ def run(
         LLMRequestError,
         NoteNotFoundError,
         NoteStorageError,
+        PolicyError,
         RunStorageError,
         UnknownRoleError,
         ValueError,
