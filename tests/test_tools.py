@@ -5,8 +5,10 @@ import hashlib
 import pytest
 
 from smartcli.tools import (
+    ApplyPatchTool,
     GitTool,
     ListFilesTool,
+    ProjectCheckTool,
     ReadFileTool,
     RiskLevel,
     ToolContext,
@@ -115,3 +117,66 @@ def test_git_tool_only_builds_fixed_read_only_commands(tmp_path, monkeypatch):
     monkeypatch.setattr("smartcli.tools.git.shutil.which", lambda name: str(fake_git))
     refused = tool.execute({"operation": "status"}, ToolContext(tmp_path))
     assert not refused.success and "inside the workspace" in refused.output
+
+
+def test_project_check_tool_only_runs_enumerated_python_commands(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+
+    class Completed:
+        returncode = 0
+        stdout = "79 passed"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured.update(command=command, kwargs=kwargs)
+        return Completed()
+
+    monkeypatch.setattr("smartcli.tools.checks.subprocess.run", fake_run)
+    tool = ProjectCheckTool()
+    assert tool.assess_risk({"check": "tests"})[0] is RiskLevel.HIGH
+    result = tool.execute({"check": "tests", "timeout_seconds": 30}, ToolContext(tmp_path))
+    assert result.success and result.metadata["exit_code"] == 0
+    assert captured["command"][1:] == ["-m", "pytest"]
+    assert captured["kwargs"]["cwd"] == tmp_path
+    assert "shell" not in captured["kwargs"]
+    assert "OPENAI_API_KEY" not in captured["kwargs"]["env"]
+    unsupported = tool.execute({"check": "deploy"}, ToolContext(tmp_path))
+    assert not unsupported.success and "Unsupported" in unsupported.output
+
+
+def test_apply_patch_requires_hash_and_exact_occurrence_count(tmp_path):
+    path = tmp_path / "value.py"
+    path.write_text("answer = 1\n", encoding="utf-8")
+    current_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    tool = ApplyPatchTool()
+    result = tool.execute(
+        {
+            "path": "value.py",
+            "expected_sha256": current_hash,
+            "replacements": [{"old": "answer = 1", "new": "answer = 2"}],
+        },
+        ToolContext(tmp_path),
+    )
+    assert result.success and path.read_text(encoding="utf-8") == "answer = 2\n"
+    assert result.metadata["before_sha256"] == current_hash
+    stale = tool.execute(
+        {
+            "path": "value.py",
+            "expected_sha256": current_hash,
+            "replacements": [{"old": "answer = 2", "new": "answer = 3"}],
+        },
+        ToolContext(tmp_path),
+    )
+    assert not stale.success and "changed since" in stale.output
+    wrong_count = tool.execute(
+        {
+            "path": "value.py",
+            "expected_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "replacements": [
+                {"old": "answer", "new": "result", "expected_occurrences": 2}
+            ],
+        },
+        ToolContext(tmp_path),
+    )
+    assert not wrong_count.success and "found 1" in wrong_count.output

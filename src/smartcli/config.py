@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from platformdirs import user_config_path
 
 from .services.prompts import ROLE_PROMPTS
+from .storage import InterProcessFileLock, StorageLockError
 
 
 class ConfigurationError(RuntimeError):
@@ -166,30 +167,42 @@ class ConfigManager:
         profile.validate()
         if name in BUILTIN_PROFILES:
             raise ConfigurationError(f"Built-in model profile cannot be replaced: {name}")
-        document = self._load_document()
-        if name in document["profiles"] and not replace:
-            raise ConfigurationError(f"Model profile already exists: {name}")
-        document["profiles"][name] = profile.to_dict()
-        self._atomic_write(document)
+        try:
+            with InterProcessFileLock(self.filepath):
+                document = self._load_document()
+                if name in document["profiles"] and not replace:
+                    raise ConfigurationError(f"Model profile already exists: {name}")
+                document["profiles"][name] = profile.to_dict()
+                self._atomic_write(document)
+        except StorageLockError as exc:
+            raise ConfigurationError(str(exc)) from exc
 
     def remove_profile(self, name: str) -> None:
         if name in BUILTIN_PROFILES:
             raise ConfigurationError(f"Built-in model profile cannot be removed: {name}")
-        document = self._load_document()
-        if name not in document["profiles"]:
-            raise ConfigurationError(f"Unknown custom model profile: {name}")
-        if document["default_model"] == name:
-            raise ConfigurationError("Cannot remove the default model profile")
-        del document["profiles"][name]
-        self._atomic_write(document)
+        try:
+            with InterProcessFileLock(self.filepath):
+                document = self._load_document()
+                if name not in document["profiles"]:
+                    raise ConfigurationError(f"Unknown custom model profile: {name}")
+                if document["default_model"] == name:
+                    raise ConfigurationError("Cannot remove the default model profile")
+                del document["profiles"][name]
+                self._atomic_write(document)
+        except StorageLockError as exc:
+            raise ConfigurationError(str(exc)) from exc
 
     def set(self, key: str, value: str) -> dict[str, str]:
         if key not in ALLOWED_CONFIG_KEYS:
             raise ConfigurationError(f"Unsupported configuration key: {key}")
-        document = self._load_document()
-        document[key] = value
-        self._validate_document(document)
-        self._atomic_write(document)
+        try:
+            with InterProcessFileLock(self.filepath):
+                document = self._load_document()
+                document[key] = value
+                self._validate_document(document)
+                self._atomic_write(document)
+        except StorageLockError as exc:
+            raise ConfigurationError(str(exc)) from exc
         return {name: str(document[name]) for name in ALLOWED_CONFIG_KEYS}
 
     def _validate_document(self, document: Mapping[str, Any]) -> None:

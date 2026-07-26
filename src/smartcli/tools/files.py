@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
 import tempfile
@@ -214,4 +215,127 @@ class WriteFileTool(Tool):
             True,
             f"Wrote {path}",
             {"path": str(path), "sha256": hashlib.sha256(encoded).hexdigest()},
+        )
+
+
+class ApplyPatchTool(Tool):
+    name = "apply_patch"
+    description = (
+        "Apply ordered exact-text replacements to one UTF-8 file. The current SHA-256 and each "
+        "replacement occurrence count must match, and every patch requires user confirmation."
+    )
+    risk_level = RiskLevel.REVIEW
+    capability = "write"
+    has_side_effects = True
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "expected_sha256": {"type": "string"},
+            "replacements": {
+                "type": "array",
+                "description": (
+                    "Ordered objects with old, new, and optional expected_occurrences (default 1)"
+                ),
+            },
+        },
+        "required": ["path", "expected_sha256", "replacements"],
+        "additionalProperties": False,
+    }
+
+    def assess_risk(self, arguments: dict[str, object]) -> tuple[RiskLevel, str]:
+        replacements = arguments.get("replacements")
+        count = len(replacements) if isinstance(replacements, list) else 0
+        return RiskLevel.REVIEW, f"applying {count} exact replacement(s) requires approval"
+
+    def execute(self, arguments: dict[str, object], context: ToolContext) -> ToolResult:
+        self.validate(arguments)
+        try:
+            path = _workspace_path(context.workspace, str(arguments["path"]))
+        except ValueError as exc:
+            return ToolResult(False, str(exc))
+        if _is_sensitive_path(path):
+            return ToolResult(False, "Access to sensitive credential files is blocked")
+        if not path.is_file():
+            return ToolResult(False, f"Patch target is not a file: {path}")
+        try:
+            raw = path.read_bytes()
+            original = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return ToolResult(False, f"Patch target is not valid UTF-8 text: {path}")
+        except OSError as exc:
+            return ToolResult(False, f"Cannot read {path}: {exc}")
+
+        current_hash = hashlib.sha256(raw).hexdigest()
+        expected_hash = str(arguments["expected_sha256"])
+        if expected_hash.casefold() != current_hash:
+            return ToolResult(
+                False,
+                "File changed since it was inspected; expected_sha256 does not match",
+                {"current_sha256": current_hash},
+            )
+
+        replacements = arguments["replacements"]
+        assert isinstance(replacements, list)
+        if not replacements:
+            return ToolResult(False, "Patch replacements cannot be empty")
+        updated = original
+        for index, replacement in enumerate(replacements, start=1):
+            if not isinstance(replacement, dict):
+                return ToolResult(False, f"Replacement {index} must be an object")
+            if set(replacement) - {"old", "new", "expected_occurrences"}:
+                return ToolResult(False, f"Replacement {index} contains unknown fields")
+            old = replacement.get("old")
+            new = replacement.get("new")
+            expected = replacement.get("expected_occurrences", 1)
+            if not isinstance(old, str) or not old:
+                return ToolResult(False, f"Replacement {index}.old must be a non-empty string")
+            if not isinstance(new, str):
+                return ToolResult(False, f"Replacement {index}.new must be a string")
+            invalid_expected = (
+                not isinstance(expected, int)
+                or isinstance(expected, bool)
+                or not 1 <= expected <= 1000
+            )
+            if invalid_expected:
+                return ToolResult(
+                    False,
+                    f"Replacement {index}.expected_occurrences must be between 1 and 1000",
+                )
+            occurrences = updated.count(old)
+            if occurrences != expected:
+                return ToolResult(
+                    False,
+                    f"Replacement {index} expected {expected} occurrence(s), found {occurrences}",
+                )
+            updated = updated.replace(old, new, expected)
+
+        result = WriteFileTool().execute(
+            {
+                "path": str(arguments["path"]),
+                "content": updated,
+                "overwrite": True,
+                "expected_sha256": current_hash,
+            },
+            context,
+        )
+        if not result.success:
+            return result
+        diff = "\n".join(
+            difflib.unified_diff(
+                original.splitlines(),
+                updated.splitlines(),
+                fromfile=str(arguments["path"]),
+                tofile=str(arguments["path"]),
+                lineterm="",
+            )
+        )
+        return ToolResult(
+            True,
+            f"Applied patch to {path}\n{diff}",
+            {
+                **result.metadata,
+                "before_sha256": current_hash,
+                "replacements": len(replacements),
+            },
         )

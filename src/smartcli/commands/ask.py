@@ -12,6 +12,8 @@ from ..services.llm import LLMRequestError, LLMService, ResponseText
 from ..services.prompts import get_role_prompt
 
 MAX_STDIN_CHARS = 100_000
+MAX_CHAT_MESSAGE_CHARS = 20_000
+MAX_CHAT_CONTEXT_CHARS = 60_000
 EXIT_WORDS = frozenset({"exit", "quit", "q"})
 TRUNCATION_WARNING = "Warning: The model stopped at its output limit; the answer may be incomplete."
 
@@ -104,9 +106,17 @@ def chat(
                 break
             if not user_input:
                 continue
+            if len(user_input) > MAX_CHAT_MESSAGE_CHARS:
+                print(
+                    f"Error: Chat message exceeds the {MAX_CHAT_MESSAGE_CHARS:,}-character limit",
+                    file=stderr,
+                )
+                continue
             messages.append({"role": "user", "content": user_input})
             try:
-                answer = _normalize_response(service.request(messages))
+                answer = _normalize_response(
+                    service.request(_bounded_chat_messages(messages, MAX_CHAT_CONTEXT_CHARS))
+                )
             except LLMRequestError as exc:
                 messages.pop()
                 print(f"Error: {exc}", file=stderr)
@@ -120,3 +130,25 @@ def chat(
             print(file=stdout)
     if interactive:
         print("Chat ended.", file=stdout)
+
+
+def _bounded_chat_messages(
+    messages: list[dict[str, str]], max_chars: int
+) -> list[dict[str, str]]:
+    """Keep the system prompt and the newest complete conversation turns."""
+    bounded = [dict(message) for message in messages]
+    omitted = False
+    while len(bounded) > 2 and sum(len(item["content"]) for item in bounded) > max_chars:
+        del bounded[1 : min(3, len(bounded) - 1)]
+        omitted = True
+    if omitted:
+        bounded.insert(
+            1,
+            {
+                "role": "system",
+                "content": (
+                    "Earlier conversation turns were omitted to stay within the context budget."
+                ),
+            },
+        )
+    return bounded

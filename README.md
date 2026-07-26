@@ -1,8 +1,8 @@
 # SmartCLI
 
-SmartCLI 是一个面向开发者、本地优先的终端 AI 助手。它读取问题、代码、日志和命令输出，提供解释、审查、排错和多轮追问，并可将结果保存为可检索的本地知识记录。
+SmartCLI 是一个安全、可审计、模型可替换的本地代码变更 Agent。它读取问题、代码、日志和命令输出，在明确授权范围内检查仓库、修改文件、运行批准的项目检查，并可将结果保存为可检索的本地知识记录。
 
-SmartCLI 需要 Python 3.11 或更高版本。`ask` 和 `chat` 只分析文本；`agent` 默认只读，只能在用户显式授权后写入工作区文件。SmartCLI 不向模型提供通用 shell 或网络执行能力。
+SmartCLI 需要 Python 3.11 或更高版本。`ask` 和 `chat` 只分析文本；`agent` 默认只读，只能在用户显式授权后写入工作区文件或执行枚举化项目检查。SmartCLI 不向模型提供通用 shell 或网络执行能力。产品设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实现架构见 [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md)。
 
 ## 安装
 
@@ -85,13 +85,21 @@ git diff | smartcli agent "审查这些修改" --model deepseek
 smartcli agent "生成测试配置" --allow write --dry-run
 smartcli agent "检查当前 Git 修改" --allow git
 smartcli agent "生成修复文件" --allow write
+smartcli agent "运行测试并分析失败" --allow check
+smartcli run list
+smartcli run show RUN_ID
+smartcli run undo RUN_ID
 ```
 
-Agent 使用 Thought → Action → Observation 闭环，最大步数默认为 12。默认只开放项目结构发现、工作区文件读取和笔记检索。`--allow git` 增加固定的只读 Git 操作，`--allow write` 增加受控文件写入；所有文件创建和覆盖都必须逐次交互确认，`--approve-risky` 不能跳过该确认。`--dry-run` 可以读取上下文，但跳过文件写入。
+Agent 使用 Thought → Action → Observation 闭环，最大步数默认为 12。默认只开放项目结构发现、工作区文件读取和笔记检索。`--allow git` 增加固定的只读 Git 操作，`--allow write` 增加受控文件写入，`--allow check` 增加 `tests`、`lint`、`compile` 三种项目检查；写入和检查都必须逐次交互确认，`--approve-risky` 不能跳过该确认。`--dry-run` 可以读取上下文，但跳过有副作用的工具。
 
-Git 工具只接受 `status`、`diff`、`log`、`show`、`ls_files` 枚举操作，由程序构造参数数组并直接启动 Git，不解释 shell 语法、不运行网络操作或修改命令。`shell` 和 `network` 不属于可授权能力。
+Git 工具只接受 `status`、`diff`、`log`、`show`、`ls_files` 枚举操作，由程序构造参数数组并直接启动 Git。项目检查同样由程序构造参数数组，不解释 shell 语法；由于测试可能执行仓库代码，其风险等级为 high 并要求确认，且不会继承 API Key 等敏感环境变量。当前检查不是操作系统沙箱，不能用于不可信仓库。`shell` 和 `network` 不属于模型可直接调用的工具能力。
 
 写文件始终限制在 workspace 内，拒绝符号链接、凭据和 `.git` 内部路径，单次上限为 1,000,000 字节。覆盖已有文件时，模型必须提交此前读取内容的 SHA-256；内容发生变化时写入会失败。最终提交使用同目录临时文件和原子替换。
+
+Agent 优先使用 `apply_patch` 对现有 UTF-8 文件做精确文本替换。Patch 必须提交当前文件 SHA-256，且每个旧文本的实际出现次数必须与声明一致；任一条件不满足时不会产生部分修改。
+
+每次 Agent 运行都会生成 `run_id`，并在用户数据目录的 `smartcli/runs` 保存结构化报告。文件修改前会保存本地检查点；`run undo` 只在当前文件仍匹配 Agent 写入后哈希时恢复，避免覆盖用户后续编辑。检查点包含修改前正文，但不会进入审计日志，也不会由 `run show` 输出。
 
 Agent 工具动作默认记录到用户数据目录的 `smartcli/audit.jsonl`。审计记录包含风险、授权和执行结果，只保存参数键、目标路径及参数哈希，不保存命令或文件正文；测试时可通过 `SMARTCLI_AUDIT_PATH` 覆盖位置。详细协议和安全规则见 [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md)。
 
@@ -117,7 +125,7 @@ smartcli ask "解释装饰器" --save --tag python
 smartcli chat --role debug
 ```
 
-输入 `exit`、`quit` 或 `q` 结束。对话上下文只保留在当前进程中；请求失败不会丢失此前的成功历史。
+输入 `exit`、`quit` 或 `q` 结束。对话上下文只保留在当前进程中；请求失败不会丢失此前的成功历史。单条消息上限为 20,000 字符，请求历史预算为 60,000 字符，超过预算时保留系统提示和最新完整轮次。
 按 `Ctrl+C` 或发送 EOF 也会正常结束聊天，不显示 Python traceback。
 
 ## 本地知识记录
@@ -132,7 +140,7 @@ smartcli note delete NOTE_ID
 
 手动笔记标记为 `manual`，`ask --save` 产生的笔记标记为 `ai`，并记录所用模型和角色。搜索覆盖标题、正文和标签且忽略大小写。
 
-默认数据位置由 `platformdirs` 决定：笔记位于用户数据目录的 `smartcli/notes.json`，配置位于用户配置目录的 `smartcli/config.json`。写入使用临时文件和原子替换。
+默认数据位置由 `platformdirs` 决定：笔记位于用户数据目录的 `smartcli/notes.json`，配置位于用户配置目录的 `smartcli/config.json`。写事务使用跨进程锁，在锁内重新加载最新数据，然后通过临时文件和原子替换提交。
 
 ## 配置
 
@@ -160,7 +168,9 @@ smartcli --version
 - 不提供流式输出。
 - 内置 Profile 单次回答默认最多生成 2,048 tokens；自定义 Profile 可以调整。
 - 对话不能跨进程恢复。
-- 笔记采用单个 JSON 文件，适合个人和中小规模数据。
+- 上下文预算当前按字符计算，尚未按具体模型 token 精确估算。
+- 笔记采用带跨进程写锁的单个 JSON 文件，适合个人和中小规模数据。
 - 模型可用性取决于供应商的 OpenAI 兼容接口、账户权限和当前模型 ID。
-- 不支持运行测试、安装依赖或其他任意项目命令；这类能力需要由宿主 CI 或独立操作系统沙箱提供。
+- 只支持枚举化 Python 项目检查；不支持安装依赖、任意 shell、网络或 Git 写命令。
 - JSONL 审计日志当前不会自动轮转。
+- 多文件撤销逐文件原子恢复，但不具备跨文件系统事务语义。

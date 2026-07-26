@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import platform
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ class AgentResult:
 ConfirmCallback = Callable[[str, dict[str, Any], str], bool]
 EventCallback = Callable[[str, str], None]
 AuditCallback = Callable[[dict[str, Any]], None]
+BeforeActionCallback = Callable[[str, dict[str, Any], ToolContext], Any]
+AfterActionCallback = Callable[[str, dict[str, Any], ToolResult, Any], None]
 
 
 class ReActAgent:
@@ -49,6 +52,10 @@ class ReActAgent:
         max_steps: int = 12,
         max_consecutive_failures: int = 3,
         model_retries: int = 0,
+        max_task_chars: int = 40_000,
+        run_id: str | None = None,
+        before_action: BeforeActionCallback | None = None,
+        after_action: AfterActionCallback | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -62,14 +69,23 @@ class ReActAgent:
         self.max_steps = max_steps
         self.max_consecutive_failures = max_consecutive_failures
         self.model_retries = model_retries
+        self.max_task_chars = max_task_chars
+        self.run_id = run_id
+        self.before_action = before_action or (lambda tool, arguments, context: None)
+        self.after_action = after_action or (
+            lambda tool, arguments, result, checkpoint: None
+        )
 
     def run(self, task: str) -> AgentResult:
         task = task.strip()
         if not task:
             raise AgentError("Agent task cannot be empty")
+        if len(task) > self.max_task_chars:
+            raise AgentError(
+                f"Agent task exceeds the {self.max_task_chars:,}-character context budget"
+            )
         system_prompt = build_system_prompt(self.tools.specs())
         recalled = self.long_term_memory.search(task, limit=5)
-        self.memory.add("task", task)
         if recalled:
             self.memory.add("long_term_memory", "\n".join(recalled))
         failures = 0
@@ -123,6 +139,7 @@ class ReActAgent:
                 "content": (
                     "Current bounded ReAct state follows. Continue from the latest event.\n"
                     f"Original task: {task}\n"
+                    f"Task SHA-256: {hashlib.sha256(task.encode('utf-8')).hexdigest()}\n"
                     f"Step {step} of {self.max_steps}; {remaining} step(s) remain.\n"
                     f"{final_instruction}"
                     f"Runtime platform: {platform.system()}; workspace: {self.context.workspace}\n"
@@ -176,11 +193,25 @@ class ReActAgent:
                     False, f"User denied {risk.value}-risk action: {reason}"
                 ).observation()
             self._audit_action(action.tool, action.arguments, risk, reason, True, False, False)
+            checkpoint = self.before_action(action.tool, action.arguments, self.context)
             result = tool.execute(action.arguments, self.context)
-            self._audit_action(
-                action.tool, action.arguments, risk, reason, True, True, False, result.success
-            )
-            return result.observation()
+            observation = result.observation()
+            try:
+                self.after_action(action.tool, action.arguments, result, checkpoint)
+            except Exception as exc:
+                observation = (
+                    f"{observation}\nRun report warning: action completed but checkpoint update "
+                    f"failed: {exc}"
+                )
+            try:
+                self._audit_action(
+                    action.tool, action.arguments, risk, reason, True, True, False, result.success
+                )
+            except Exception as exc:
+                observation = (
+                    f"{observation}\nAudit warning: action completed but result audit failed: {exc}"
+                )
+            return observation
         except Exception as exc:
             return ToolResult(False, f"Tool invocation error: {exc}").observation()
 
@@ -205,5 +236,6 @@ class ReActAgent:
                 "executed": executed,
                 "dry_run": dry_run,
                 "success": success,
+                "run_id": self.run_id,
             }
         )

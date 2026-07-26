@@ -171,9 +171,10 @@ def test_dry_run_skips_side_effects_without_confirmation_and_audits(tmp_path):
             "reason": "review",
             "approved": False,
             "executed": False,
-            "dry_run": True,
-            "success": None,
-        }
+                "dry_run": True,
+                "success": None,
+                "run_id": None,
+            }
     ]
 
 
@@ -192,3 +193,34 @@ def test_agent_normalizes_final_markdown(tmp_path):
     result = ReActAgent(llm, ToolRegistry([EchoTool()]), workspace=tmp_path).run("inspect")
     assert result.final == "### Result\n\nvalue"
     assert "lightweight Markdown" in llm.requests[0][0]["content"]
+
+
+def test_agent_rejects_task_beyond_context_budget(tmp_path):
+    agent = ReActAgent(
+        FakeLLM([]), ToolRegistry([EchoTool()]), workspace=tmp_path, max_task_chars=10
+    )
+    with pytest.raises(AgentError, match="context budget"):
+        agent.run("x" * 11)
+
+
+def test_post_execution_audit_failure_does_not_turn_success_into_failure(tmp_path):
+    calls = 0
+
+    def audit(event):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("audit disk full")
+
+    llm = FakeLLM(
+        [
+            decision(thought="run", action={"tool": "echo", "arguments": {"text": "ok"}}),
+            decision(thought="done", final="completed"),
+        ]
+    )
+    result = ReActAgent(
+        llm, ToolRegistry([EchoTool()]), workspace=tmp_path, audit=audit
+    ).run("task")
+    assert result.success and result.final == "completed"
+    assert "Tool status: success" in llm.requests[1][1]["content"]
+    assert "Audit warning" in llm.requests[1][1]["content"]

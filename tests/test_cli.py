@@ -16,6 +16,7 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("SMARTCLI_CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.setenv("SMARTCLI_NOTES_PATH", str(tmp_path / "notes.json"))
     monkeypatch.setenv("SMARTCLI_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("SMARTCLI_RUNS_PATH", str(tmp_path / "runs"))
     return tmp_path
 
 
@@ -34,7 +35,7 @@ def test_help_and_version(capsys):
     with pytest.raises(SystemExit) as version_exit:
         cli.run(["--version"])
     assert version_exit.value.code == 0
-    assert "smartcli 0.6.3" in capsys.readouterr().out
+    assert "smartcli 0.8.0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("role", ROLE_PROMPTS)
@@ -79,7 +80,7 @@ def test_agent_command_runs_react_final_response(isolated_paths, monkeypatch):
 
     monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
     code, stdout, stderr = run_cli(["agent", "finish this task", "--max-steps", "2"])
-    assert (code, stdout, stderr) == (0, "agent answer\n", "")
+    assert code == 0 and stdout == "agent answer\n" and "Run ID: run_" in stderr
 
 
 def test_agent_verbose_does_not_print_model_thought(isolated_paths, monkeypatch):
@@ -105,8 +106,10 @@ def test_agent_is_read_only_by_default_and_validates_capabilities(isolated_paths
         "read_file",
         "note_search",
         "write_file",
+        "apply_patch",
     )
     assert cli._agent_tools({"git"}).names()[-1] == "git"
+    assert cli._agent_tools({"check"}).names()[-1] == "run_check"
     with pytest.raises(SystemExit) as exc:
         cli.run(["agent", "task", "--allow", "shell"])
     assert exc.value.code == 2 and "invalid choice" in capsys.readouterr().err
@@ -324,3 +327,11 @@ def test_agent_json_output(isolated_paths, monkeypatch):
     payload = json.loads(stdout)
     assert code == 0 and not stderr and payload["data"]["final"] == "safe"
     assert payload["data"]["steps"] == 1
+    assert payload["data"]["run_id"].startswith("run_")
+    run_id = payload["data"]["run_id"]
+    code, stdout, stderr = run_cli(["run", "list", "--json"])
+    listed = json.loads(stdout)
+    assert code == 0 and not stderr and listed["data"][0]["run_id"] == run_id
+    code, stdout, stderr = run_cli(["run", "show", run_id, "--json"])
+    shown = json.loads(stdout)
+    assert code == 0 and not stderr and shown["data"]["status"] == "completed"

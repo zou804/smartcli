@@ -54,9 +54,11 @@ ReActAgent
 
 ## 能力安全规则
 
-Agent 默认注册 `list_files`、`read_file` 和 `note_search`。`--allow git` 开放固定的只读 Git 操作，`--allow write` 开放受控写文件；未注册的能力对模型不可见。通用 shell 和网络能力不再提供。`--dry-run` 允许只读工具执行，但跳过具有副作用的工具。
+Agent 默认注册 `list_files`、`read_file` 和 `note_search`。`--allow git` 开放固定的只读 Git 操作，`--allow write` 开放受控 `write_file` 和 `apply_patch`，`--allow check` 开放 `tests`、`lint`、`compile` 三种枚举化项目检查；未注册的能力对模型不可见。通用 shell 和网络能力不提供。`--dry-run` 允许只读工具执行，但跳过具有副作用的工具。
 
-文件工具将路径限制在 `--workspace` 内并拒绝常见凭据、`.git` 内部路径和符号链接。所有写入均为 `review` 风险并要求逐次确认，`--approve-risky` 不适用于写文件；覆盖还需要匹配当前文件 SHA-256。Git 工具不接收命令文本，只执行程序构造的只读参数数组，并禁用全局/系统 Git 配置和外部 diff。
+文件工具将路径限制在 `--workspace` 内并拒绝常见凭据、`.git` 内部路径和符号链接。所有写入均为 `review` 风险并要求逐次确认，`--approve-risky` 不适用于写文件；覆盖还需要匹配当前文件 SHA-256。Git 工具不接收命令文本，只执行程序构造的只读参数数组，并禁用全局/系统 Git 配置和外部 diff。项目检查不经过 shell，但可能执行仓库代码，因此属于 `high` 风险并要求逐次确认。
+
+`apply_patch` 只执行精确文本替换，不接收 shell patch 命令。运行器在写工具执行前保存本地检查点，并把 `run_id` 写入审计事件。检查点正文与审计日志分离，撤销前必须匹配写入后的 SHA-256。
 
 每次工具授权和执行结果写入 JSONL 审计日志。参数只记录字段名、目标路径和 SHA-256 摘要，不记录命令或正文原文。
 

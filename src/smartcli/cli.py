@@ -27,12 +27,15 @@ from .commands.note import NoteManager, NoteNotFoundError, NoteStorageError
 from .config import BUILTIN_PROFILES, ConfigManager, ConfigurationError, ModelProfile
 from .doctor import run_doctor
 from .rendering import render_markdown
+from .runs import RunStorageError, RunStore
 from .services.llm import LLMRequestError, LLMService
 from .services.prompts import ROLE_PROMPTS, UnknownRoleError
 from .tools import (
+    ApplyPatchTool,
     GitTool,
     ListFilesTool,
     NoteSearchTool,
+    ProjectCheckTool,
     ReadFileTool,
     ToolRegistry,
     WriteFileTool,
@@ -53,15 +56,22 @@ def _agent_tools(allowed: set[str] | None = None) -> ToolRegistry:
     capabilities = allowed or set()
     tools = [ListFilesTool(), ReadFileTool(), NoteSearchTool(_note_manager())]
     if "write" in capabilities:
-        tools.append(WriteFileTool())
+        tools.extend((WriteFileTool(), ApplyPatchTool()))
     if "git" in capabilities:
         tools.append(GitTool())
+    if "check" in capabilities:
+        tools.append(ProjectCheckTool())
     return ToolRegistry(tools)
 
 
 def _audit_logger() -> AuditLogger:
     override = os.getenv("SMARTCLI_AUDIT_PATH")
     return AuditLogger(Path(override) if override else None)
+
+
+def _run_store() -> RunStore:
+    override = os.getenv("SMARTCLI_RUNS_PATH")
+    return RunStore(Path(override) if override else None)
 
 
 def _add_json_option(parser: argparse.ArgumentParser) -> None:
@@ -104,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--allow",
         action="append",
-        choices=("write", "git"),
+        choices=("write", "git", "check"),
         default=[],
         help="Enable an Agent capability; repeat for multiple capabilities",
     )
@@ -112,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Inspect and plan while skipping file writes",
+        help="Inspect and plan while skipping side-effecting tools",
     )
     agent_parser.add_argument(
         "--approve-risky",
@@ -190,6 +200,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_option(doctor_parser)
     doctor_parser.set_defaults(handler=_handle_doctor)
+
+    run_parser = commands.add_parser("run", help="Inspect and undo Agent runs")
+    run_commands = run_parser.add_subparsers(dest="run_action", required=True)
+    run_list = run_commands.add_parser("list", help="List Agent runs")
+    _add_json_option(run_list)
+    run_list.set_defaults(handler=_handle_run_list)
+    run_show = run_commands.add_parser("show", help="Show a redacted Agent run report")
+    run_show.add_argument("id")
+    _add_json_option(run_show)
+    run_show.set_defaults(handler=_handle_run_show)
+    run_undo = run_commands.add_parser("undo", help="Undo unchanged files from an Agent run")
+    run_undo.add_argument("id")
+    _add_json_option(run_undo)
+    run_undo.set_defaults(handler=_handle_run_undo)
     return parser
 
 
@@ -304,13 +328,15 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
         if (args.verbose or args.dry_run) and kind not in {"thought", "final"}:
             print(f"{kind.title()}: {content}", file=stderr)
 
+    service = LLMService(model)
     logger = _audit_logger()
+    journal = _run_store().start(workspace, task)
 
     def audit(event: dict[str, Any]) -> None:
         logger.record({**event, "arguments": summarize_arguments(event["arguments"])})
 
     agent = ReActAgent(
-        LLMService(model),
+        service,
         _agent_tools(allowed),
         workspace=workspace,
         confirm=confirm,
@@ -318,10 +344,22 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
         audit=audit,
         dry_run=args.dry_run,
         max_steps=args.max_steps,
+        run_id=journal.run_id,
+        before_action=journal.prepare_action,
+        after_action=journal.record_action,
     )
-    result = agent.run(task)
+    try:
+        result = agent.run(task)
+    except Exception as exc:
+        try:
+            journal.fail(str(exc))
+        except RunStorageError:
+            pass
+        raise
     if not result.success:
+        journal.fail(result.final)
         raise AgentError(result.final)
+    journal.complete(final=result.final, steps=result.steps, plan=result.plan)
     if not _emit_json(
         args,
         stdout,
@@ -330,9 +368,11 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
             "model": model,
             "steps": result.steps,
             "plan": list(result.plan),
+            "run_id": journal.run_id,
         },
     ):
         render_markdown(result.final, stdout)
+        print(f"Run ID: {journal.run_id}", file=stderr)
 
 
 def _handle_note_add(
@@ -477,6 +517,41 @@ def _handle_doctor(
         args.exit_code = 1
 
 
+def _handle_run_list(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    reports = _run_store().list()
+    if _emit_json(args, stdout, reports):
+        return
+    for report in reports:
+        print(
+            f"{report['run_id']}  {report['status']}  "
+            f"actions={report['actions']} changes={report['changes']}  "
+            f"{report['task_preview']}",
+            file=stdout,
+        )
+
+
+def _handle_run_show(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    report = _run_store().public_report(args.id)
+    if not _emit_json(args, stdout, report):
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=stdout)
+
+
+def _handle_run_undo(
+    args: argparse.Namespace, _stdin: TextIO, stdout: TextIO, _stderr: TextIO
+) -> None:
+    result = _run_store().undo(args.id)
+    if not _emit_json(args, stdout, result):
+        print(
+            f"Undid {args.id}: restored={len(result['restored'])}, "
+            f"removed={len(result['removed'])}",
+            file=stdout,
+        )
+
+
 def run(
     argv: Sequence[str] | None = None,
     *,
@@ -498,6 +573,7 @@ def run(
         LLMRequestError,
         NoteNotFoundError,
         NoteStorageError,
+        RunStorageError,
         UnknownRoleError,
         ValueError,
     ) as exc:
