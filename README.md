@@ -148,6 +148,8 @@ smartcli eval run path/to/cases --model ollama
 
 案例由 `case.json` 和 `fixture/` 组成。默认脚本化决策通过真实 ReAct 循环在一次性 workspace 中执行，并确定性评分运行状态、验证检查、预期/禁止变更路径、文件包含/排除断言、步数预算和权限越界；聚合 JSON 与 Markdown 报告保存在用户数据目录的 `smartcli/evals`。
 
+案例声明 `check` 能力时必须在 fixture 的 `smartcli.toml` 中配置 Docker 后端；eval 不会自动批准 Local 检查，因为一次性目录并不能隔离宿主文件和网络。fixture 中的符号链接会被拒绝。
+
 也可以放入当前目录或父目录的 `.env`。API Key 不会写入用户配置、ModelProfile 或由 `config show` 显示。本项目的自动化测试不会访问网络或验证付费模型。
 
 ## 单次分析

@@ -77,15 +77,25 @@ class EvalRunner:
     def _run_case(self, case: EvalCase) -> EvalCaseResult:
         with tempfile.TemporaryDirectory(prefix=f"smartcli-eval-{case.case_id}-") as temp:
             workspace = Path(temp) / "workspace"
-            shutil.copytree(case.fixture, workspace)
+            _reject_fixture_links(case.fixture)
+            shutil.copytree(case.fixture, workspace, symlinks=True)
             policy = load_project_policy(workspace)
+            if "check" in case.capabilities and policy.execution.backend != "docker":
+                raise EvalCaseError(
+                    "Unattended eval checks require the Docker backend; "
+                    "Local checks can execute fixture code on the host"
+                )
             backend = backend_from_policy(policy)
             tools = _tools(case, policy, backend)
             llm = LLMService(self.model_name) if self.model_name else _offline_llm(case)
             store = RunStore(Path(temp) / "runs")
             journal = store.start(workspace, case.task)
             telemetry = TelemetryCollector(execution_backend=policy.execution.backend)
-            violations = _permission_violations(case)
+            violations = [0]
+
+            def record_violation(tool: str, reason: str) -> None:
+                violations[0] += 1
+
             agent = ReActAgent(
                 llm,
                 tools,
@@ -100,6 +110,7 @@ class EvalRunner:
                 verification_provider=lambda: journal.verification(
                     case.required_checks
                 ).to_dict(),
+                on_policy_violation=record_violation,
             )
             try:
                 result = agent.run(case.task)
@@ -120,7 +131,7 @@ class EvalRunner:
                 journal.set_verification(verification)
                 journal.fail(str(exc))
             report = store.get(journal.run_id)
-            report["permission_violations"] = violations
+            report["permission_violations"] = violations[0]
             grade = grade_case(case, workspace, report)
             steps = report.get("result", {}).get("steps", case.max_steps)
             return EvalCaseResult(
@@ -183,6 +194,13 @@ def _offline_llm(case: EvalCase) -> _ScriptedLLM:
     return _ScriptedLLM(case.decisions)
 
 
+def _reject_fixture_links(fixture: Path) -> None:
+    for path in fixture.rglob("*"):
+        if path.is_symlink():
+            relative = path.relative_to(fixture).as_posix()
+            raise EvalCaseError(f"Eval fixture contains a symbolic link: {relative}")
+
+
 def _tools(case: EvalCase, policy: Any, backend: Any) -> ToolRegistry:
     tools: list[Any] = [ListFilesTool(), ReadFileTool()]
     if "write" in case.capabilities:
@@ -201,13 +219,3 @@ def _capability(tool: str) -> str:
         "git": "git",
         "run_check": "check",
     }.get(tool, "read")
-
-
-def _permission_violations(case: EvalCase) -> int:
-    return sum(
-        1
-        for decision in case.decisions
-        if isinstance(decision.get("action"), dict)
-        and _capability(str(decision["action"].get("tool", "")))
-        not in {*case.capabilities, "read"}
-    )

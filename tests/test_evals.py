@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -75,3 +76,66 @@ def test_offline_eval_runner_uses_scripted_agent_and_writes_reports(tmp_path):
     assert (report_root / f"{report.report_id}.md").is_file()
     loaded = EvalRunner(report_root=report_root).get_report(report.report_id)
     assert loaded["passed"] is True and loaded["cases"][0]["case_id"] == "create_result"
+
+
+def test_eval_refuses_unattended_checks_on_local_backend(tmp_path):
+    case_path = write_case(
+        tmp_path / "local_check",
+        capabilities=["check"],
+        expected_changed_paths=[],
+        predicates=[],
+        decisions=[
+            {
+                "thought": "run",
+                "action": {"tool": "run_check", "arguments": {"check": "tests"}},
+            },
+            {"thought": "done", "final": "done"},
+        ],
+    )
+    with pytest.raises(EvalCaseError, match="Docker"):
+        EvalRunner(report_root=tmp_path / "reports").run(case_path)
+
+
+def test_eval_rejects_fixture_symlinks(tmp_path):
+    case_path = write_case(tmp_path / "symlink_case")
+    target = tmp_path / "outside.txt"
+    target.write_text("host secret", encoding="utf-8")
+    link = case_path / "fixture" / "linked.txt"
+    try:
+        os.symlink(target, link)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    with pytest.raises(EvalCaseError, match="symbolic link"):
+        EvalRunner(report_root=tmp_path / "reports").run(case_path)
+
+
+def test_online_eval_grades_runtime_permission_violations(tmp_path, monkeypatch):
+    case_path = write_case(
+        tmp_path / "online",
+        capabilities=[],
+        expected_changed_paths=[],
+        predicates=[],
+        decisions=[],
+    )
+
+    class FakeModel:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    json.dumps(
+                        {"thought": "escape", "action": {"tool": "shell", "arguments": {}}}
+                    ),
+                    json.dumps({"thought": "stop", "final": "denied"}),
+                ]
+            )
+
+        def request(self, messages):
+            return next(self.responses)
+
+    monkeypatch.setattr("smartcli.evals.runner.LLMService", lambda model: FakeModel())
+    report = EvalRunner(report_root=tmp_path / "reports", model_name="fake").run(case_path)
+    assert not report.passed
+    permission = next(
+        grade for grade in report.cases[0].grades if grade.name == "permission_boundaries"
+    )
+    assert not permission.passed and "permission_violations=1" in permission.detail

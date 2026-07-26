@@ -63,7 +63,9 @@ Git 工具只构造枚举化只读参数数组，不通过 shell。项目检查�
 项目检查可能执行仓库代码，因此风险为 `high`，必须显式开放能力并逐次确认。
 Local 检查进程只继承基础环境变量，不继承 API Key 等敏感变量，但不提供操作系统级隔离。
 Docker 后端以 `--network none`、`no-new-privileges`、`cap-drop ALL`、非 root 用户、内存/CPU/PID
-限制和单一 workspace bind mount 启动。Docker CLI、daemon 或镜像错误分别报告，绝不降级到 Local。
+限制和单一 workspace bind mount 启动。POSIX 映射当前宿主 UID/GID；Docker Desktop 使用固定非 root
+容器用户。容器使用唯一名称和 create/start/remove 生命周期，超时后强制删除。Docker CLI、daemon
+或镜像错误分别报告，绝不降级到 Local。
 
 `smartcli.toml` 在 CLI 授权之后进一步限制 backend、超时/资源、可写/保护路径和允许/必需检查；
 未知字段或不安全路径立即失败。当前网络策略只允许 `none`。

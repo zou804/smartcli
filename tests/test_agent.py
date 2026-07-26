@@ -50,6 +50,13 @@ class MutatingTool(EchoTool):
         raise AssertionError("dry-run must not execute the tool")
 
 
+class ExplodingTool(EchoTool):
+    name = "explode"
+
+    def execute(self, arguments, context: ToolContext):
+        raise RuntimeError("tool crashed")
+
+
 def decision(**value):
     return json.dumps(value)
 
@@ -275,3 +282,48 @@ def test_agent_records_model_protocol_denial_and_tool_telemetry(tmp_path):
     assert value["model"]["total_tokens"] == 4
     assert value["protocol_errors"] == 1 and value["approval_denials"] == 1
     assert value["tools"]["by_name"]["echo"]["calls"] == 1
+
+
+def test_tool_exception_is_recorded_as_failed_execution_evidence(tmp_path):
+    llm = FakeLLM(
+        [
+            decision(
+                thought="try",
+                action={"tool": "explode", "arguments": {"text": "x"}},
+            ),
+            decision(thought="recover", final="reported"),
+        ]
+    )
+    ticks = iter((1.0, 1.1))
+    telemetry = TelemetryCollector(clock=lambda: next(ticks))
+    recorded = []
+    agent = ReActAgent(
+        llm,
+        ToolRegistry([ExplodingTool()]),
+        workspace=tmp_path,
+        telemetry=telemetry,
+        clock=lambda: 5.0,
+        after_action=lambda tool, arguments, result, checkpoint: recorded.append(result),
+    )
+    assert agent.run("handle failure").final == "reported"
+    assert len(recorded) == 1 and recorded[0].success is False
+    assert "tool crashed" in recorded[0].output
+    assert telemetry.to_dict()["tools"]["failures"] == 1
+
+
+def test_unknown_tool_attempt_emits_runtime_policy_violation(tmp_path):
+    violations = []
+    llm = FakeLLM(
+        [
+            decision(thought="try", action={"tool": "shell", "arguments": {}}),
+            decision(thought="stop", final="denied"),
+        ]
+    )
+    result = ReActAgent(
+        llm,
+        ToolRegistry([EchoTool()]),
+        workspace=tmp_path,
+        on_policy_violation=lambda tool, reason: violations.append((tool, reason)),
+    ).run("do not escape")
+    assert result.final == "denied"
+    assert violations == [("shell", "Unknown tool: shell")]

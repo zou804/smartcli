@@ -67,19 +67,24 @@ def test_local_backend_classifies_timeout(tmp_path):
 
 
 def test_docker_backend_constructs_isolated_command_without_fallback(tmp_path):
-    captured = {}
+    calls = []
 
     def fake_run(command, **kwargs):
-        captured.update(command=command, kwargs=kwargs)
+        calls.append((command, kwargs))
         return Completed()
 
     result = DockerExecutionBackend(
-        docker_executable="C:/tools/docker.exe", runner=fake_run
+        docker_executable="C:/tools/docker.exe",
+        runner=fake_run,
+        name_factory=lambda: "smartcli-test",
+        container_user="1000:1000",
     ).run(request(tmp_path, image="project:test"))
-    command = captured["command"]
+    command = calls[0][0]
     joined = " ".join(command)
     assert result.success and result.backend == "docker"
     assert command[0] == "C:/tools/docker.exe"
+    assert command[1:4] == ["create", "--name", "smartcli-test"]
+    assert "--pull never" in joined
     assert "--network none" in joined
     assert "--memory 512m" in joined and "--cpus 1.0" in joined
     assert "--pids-limit 128" in joined
@@ -88,6 +93,8 @@ def test_docker_backend_constructs_isolated_command_without_fallback(tmp_path):
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "--mount"]
     assert len(mounts) == 1 and "target=/workspace" in mounts[0]
     assert command[-3:] == ["python", "-m", "pytest"]
+    assert calls[1][0] == ["C:/tools/docker.exe", "start", "--attach", "smartcli-test"]
+    assert calls[2][0] == ["C:/tools/docker.exe", "rm", "--force", "smartcli-test"]
 
 
 def test_docker_backend_reports_missing_cli_without_running_local(tmp_path):
@@ -103,3 +110,21 @@ def test_docker_backend_reports_missing_cli_without_running_local(tmp_path):
     ).run(request(tmp_path, image="project:test"))
     assert not result.success and result.error_type == "docker_missing"
     assert called is False
+
+
+def test_docker_backend_force_removes_container_after_timeout(tmp_path):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1] == "start":
+            raise subprocess.TimeoutExpired(command, 3, output="partial", stderr="slow")
+        return Completed()
+
+    result = DockerExecutionBackend(
+        docker_executable="docker",
+        runner=fake_run,
+        name_factory=lambda: "smartcli-timeout",
+    ).run(request(tmp_path, image="project:test", timeout_seconds=3))
+    assert result.timed_out and result.error_type == "timeout"
+    assert calls[-1] == ["docker", "rm", "--force", "smartcli-timeout"]

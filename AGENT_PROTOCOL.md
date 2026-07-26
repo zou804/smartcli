@@ -70,6 +70,7 @@ workspace 根目录的 `smartcli.toml` 在硬编码安全规则和 CLI 能力授
 最终步骤会收到由动作日志生成的 verification evidence。只有最后一次成功写入后的检查才有效，模型不得超出证据声称测试通过。运行遥测仅记录次数、耗时、成功状态、后端和供应商 token usage，不接受 prompt、文件正文或工具参数。
 
 离线 eval 使用版本化 `case.json`、一次性 fixture 和脚本化决策驱动同一个 ReActAgent；自动批准仅限案例声明的 capabilities 与临时 workspace。真实模型评测必须在 CLI 显式指定 `--model`。
+eval 中的检查只允许 Docker 后端，fixture 符号链接会被拒绝；未知/未授权工具尝试由运行时记录并进入权限 grader。
 
 ## 系统提示词
 

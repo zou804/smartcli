@@ -39,6 +39,7 @@ AuditCallback = Callable[[dict[str, Any]], None]
 BeforeActionCallback = Callable[[str, dict[str, Any], ToolContext], Any]
 AfterActionCallback = Callable[[str, dict[str, Any], ToolResult, Any], None]
 VerificationProvider = Callable[[], dict[str, Any]]
+PolicyViolationCallback = Callable[[str, str], None]
 
 
 class ReActAgent:
@@ -65,6 +66,7 @@ class ReActAgent:
         telemetry: TelemetryCollector | None = None,
         clock: Callable[[], float] = time.monotonic,
         verification_provider: VerificationProvider | None = None,
+        on_policy_violation: PolicyViolationCallback | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -87,6 +89,7 @@ class ReActAgent:
         self.telemetry = telemetry
         self.clock = clock
         self.verification_provider = verification_provider
+        self.on_policy_violation = on_policy_violation or (lambda tool, reason: None)
 
     def run(self, task: str) -> AgentResult:
         try:
@@ -221,6 +224,11 @@ class ReActAgent:
         action = decision.action
         try:
             tool = self.tools.get(action.tool)
+        except ValueError as exc:
+            reason = str(exc)
+            self.on_policy_violation(action.tool, reason)
+            return ToolResult(False, f"Tool invocation error: {reason}").observation()
+        try:
             tool.validate(action.arguments)
             risk, reason = tool.assess_risk(action.arguments)
             event_arguments = dict(action.arguments)
@@ -247,7 +255,14 @@ class ReActAgent:
             self._audit_action(action.tool, action.arguments, risk, reason, True, False, False)
             checkpoint = self.before_action(action.tool, action.arguments, self.context)
             started = self.clock()
-            result = tool.execute(action.arguments, self.context)
+            try:
+                result = tool.execute(action.arguments, self.context)
+            except Exception as exc:
+                result = ToolResult(
+                    False,
+                    f"Tool invocation error: {exc}",
+                    {"error_type": type(exc).__name__},
+                )
             elapsed = max(0, round((self.clock() - started) * 1000))
             if self.telemetry is not None:
                 backend = result.metadata.get("backend")

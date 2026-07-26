@@ -12,9 +12,9 @@ from .base import RiskLevel, Tool, ToolContext, ToolResult
 class ProjectCheckTool(Tool):
     name = "run_check"
     description = (
-        "Run one approved local project check without a shell: tests, lint, or compile. "
-        "Repository code may execute without an OS sandbox, so every check requires explicit "
-        "confirmation. Sensitive environment variables are not inherited."
+        "Run one policy-approved project check through the configured execution backend without "
+        "a shell: tests, lint, or compile. Repository code may execute, so every check requires "
+        "explicit confirmation. Sensitive environment variables are not inherited."
     )
     capability = "check"
     risk_level = RiskLevel.HIGH
