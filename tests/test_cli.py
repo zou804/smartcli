@@ -81,6 +81,7 @@ def test_agent_command_runs_react_final_response(isolated_paths, monkeypatch):
     monkeypatch.setattr(cli, "LLMService", lambda model: FakeAgentLLM())
     code, stdout, stderr = run_cli(["agent", "finish this task", "--max-steps", "2"])
     assert code == 0 and stdout == "agent answer\n" and "Run ID: run_" in stderr
+    assert "Verification: unverified" in stderr
 
 
 def test_agent_verbose_does_not_print_model_thought(isolated_paths, monkeypatch):
@@ -327,6 +328,8 @@ def test_agent_json_output(isolated_paths, monkeypatch):
     payload = json.loads(stdout)
     assert code == 0 and not stderr and payload["data"]["final"] == "safe"
     assert payload["data"]["steps"] == 1
+    assert payload["data"]["verification"]["status"] == "unverified"
+    assert payload["data"]["telemetry"]["model"]["calls"] == 1
     assert payload["data"]["run_id"].startswith("run_")
     run_id = payload["data"]["run_id"]
     code, stdout, stderr = run_cli(["run", "list", "--json"])

@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 from smartcli.runs import RunStorageError, RunStore
-from smartcli.tools import ToolContext, WriteFileTool
+from smartcli.tools import ToolContext, ToolResult, WriteFileTool
 
 
 def test_run_journal_redacts_checkpoint_and_undoes_existing_file(tmp_path):
@@ -72,3 +72,23 @@ def test_run_journal_persists_operational_telemetry(tmp_path):
     journal.set_telemetry(telemetry)
     journal.complete(final="done", steps=1, plan=())
     assert store.public_report(journal.run_id)["telemetry"] == telemetry
+
+
+def test_run_journal_builds_and_persists_verification(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = RunStore(tmp_path / "runs")
+    journal = store.start(workspace, "verify")
+    journal.record_action(
+        "run_check",
+        {"check": "tests"},
+        ToolResult(
+            True,
+            "passed",
+            {"check": "tests", "exit_code": 0, "backend": "local"},
+        ),
+        None,
+    )
+    verification = journal.verification(("tests",))
+    journal.complete(final="done", steps=1, plan=(), verification=verification)
+    assert store.public_report(journal.run_id)["verification"]["status"] == "verified"

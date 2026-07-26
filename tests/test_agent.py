@@ -190,6 +190,23 @@ def test_last_step_requires_a_final_answer(tmp_path):
     assert "Original task: inspect" in llm.requests[0][1]["content"]
 
 
+def test_final_step_receives_machine_generated_verification_evidence(tmp_path):
+    llm = FakeLLM([decision(thought="done", final="best available answer")])
+    ReActAgent(
+        llm,
+        ToolRegistry([EchoTool()]),
+        workspace=tmp_path,
+        max_steps=1,
+        verification_provider=lambda: {
+            "status": "unverified",
+            "required_checks": ["tests"],
+        },
+    ).run("inspect")
+    prompt = llm.requests[0][1]["content"]
+    assert '"status": "unverified"' in prompt
+    assert "Do not claim verification beyond this evidence" in prompt
+
+
 def test_agent_normalizes_final_markdown(tmp_path):
     llm = FakeLLM([decision(thought="done", final="# Result\n\n```text\nvalue\n```")])
     result = ReActAgent(llm, ToolRegistry([EchoTool()]), workspace=tmp_path).run("inspect")

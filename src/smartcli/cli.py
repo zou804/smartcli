@@ -367,22 +367,33 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
         before_action=journal.prepare_action,
         after_action=journal.record_action,
         telemetry=telemetry,
+        verification_provider=lambda: journal.verification(
+            policy.checks.required
+        ).to_dict(),
     )
     try:
         result = agent.run(task)
     except Exception as exc:
         try:
             persist_telemetry()
+            journal.set_verification(journal.verification(policy.checks.required))
             journal.fail(str(exc))
         except RunStorageError:
             pass
         raise
     if not result.success:
         persist_telemetry()
+        journal.set_verification(journal.verification(policy.checks.required))
         journal.fail(result.final)
         raise AgentError(result.final)
     persist_telemetry()
-    journal.complete(final=result.final, steps=result.steps, plan=result.plan)
+    verification = journal.verification(policy.checks.required)
+    journal.complete(
+        final=result.final,
+        steps=result.steps,
+        plan=result.plan,
+        verification=verification,
+    )
     if not _emit_json(
         args,
         stdout,
@@ -393,10 +404,12 @@ def _handle_agent(args: argparse.Namespace, stdin: TextIO, stdout: TextIO, stder
             "plan": list(result.plan),
             "run_id": journal.run_id,
             "telemetry": telemetry.to_dict(),
+            "verification": verification.to_dict(),
         },
     ):
         render_markdown(result.final, stdout)
         print(f"Run ID: {journal.run_id}", file=stderr)
+        print(f"Verification: {verification.status}", file=stderr)
 
 
 def _handle_note_add(

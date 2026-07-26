@@ -18,6 +18,7 @@ from platformdirs import user_data_path
 from .audit import summarize_arguments
 from .storage import InterProcessFileLock, StorageLockError
 from .tools import ToolContext, ToolResult
+from .verification import VerificationSummary, build_verification
 
 
 class RunStorageError(RuntimeError):
@@ -99,18 +100,35 @@ class RunJournal:
                     raise RunStorageError("Write tool did not return the resulting SHA-256")
         self.store._write(self.document)
 
-    def complete(self, *, final: str, steps: int, plan: tuple[str, ...]) -> None:
+    def verification(self, required_checks: tuple[str, ...]) -> VerificationSummary:
+        return build_verification(
+            self.document["actions"], self.document["changes"], required_checks
+        )
+
+    def complete(
+        self,
+        *,
+        final: str,
+        steps: int,
+        plan: tuple[str, ...],
+        verification: VerificationSummary | None = None,
+    ) -> None:
         self.document.update(
             {
                 "status": "completed",
                 "completed_at": _now(),
                 "result": {"final": final, "steps": steps, "plan": list(plan)},
+                "verification": verification.to_dict() if verification is not None else None,
             }
         )
         self.store._write(self.document)
 
     def set_telemetry(self, value: dict[str, Any]) -> None:
         self.document["telemetry"] = value
+        self.store._write(self.document)
+
+    def set_verification(self, value: VerificationSummary) -> None:
+        self.document["verification"] = value.to_dict()
         self.store._write(self.document)
 
     def fail(self, error: str) -> None:
@@ -145,6 +163,7 @@ class RunStore:
             "actions": [],
             "changes": [],
             "telemetry": None,
+            "verification": None,
             "result": None,
         }
         self._write(document)

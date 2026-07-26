@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import platform
 import time
 from collections.abc import Callable
@@ -37,6 +38,7 @@ EventCallback = Callable[[str, str], None]
 AuditCallback = Callable[[dict[str, Any]], None]
 BeforeActionCallback = Callable[[str, dict[str, Any], ToolContext], Any]
 AfterActionCallback = Callable[[str, dict[str, Any], ToolResult, Any], None]
+VerificationProvider = Callable[[], dict[str, Any]]
 
 
 class ReActAgent:
@@ -62,6 +64,7 @@ class ReActAgent:
         after_action: AfterActionCallback | None = None,
         telemetry: TelemetryCollector | None = None,
         clock: Callable[[], float] = time.monotonic,
+        verification_provider: VerificationProvider | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -83,6 +86,7 @@ class ReActAgent:
         )
         self.telemetry = telemetry
         self.clock = clock
+        self.verification_provider = verification_provider
 
     def run(self, task: str) -> AgentResult:
         try:
@@ -147,6 +151,17 @@ class ReActAgent:
             if remaining == 1
             else ""
         )
+        verification_instruction = ""
+        if remaining == 1 and self.verification_provider is not None:
+            try:
+                evidence = self.verification_provider()
+            except Exception as exc:
+                evidence = {"status": "unavailable", "error_type": type(exc).__name__}
+            verification_instruction = (
+                "Machine-generated verification evidence follows. Do not claim verification "
+                "beyond this evidence.\n"
+                f"<verification>{json.dumps(evidence, ensure_ascii=False)}</verification>\n"
+            )
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -157,6 +172,7 @@ class ReActAgent:
                     f"Task SHA-256: {hashlib.sha256(task.encode('utf-8')).hexdigest()}\n"
                     f"Step {step} of {self.max_steps}; {remaining} step(s) remain.\n"
                     f"{final_instruction}"
+                    f"{verification_instruction}"
                     f"Runtime platform: {platform.system()}; workspace: {self.context.workspace}\n"
                     "<react_state>\n"
                     f"{self.memory.render()}\n"
